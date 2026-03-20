@@ -2,7 +2,9 @@ import argparse
 import glob
 import logging
 import os
+import signal
 import shutil
+import socket
 import sys
 import time
 from collections import deque
@@ -22,6 +24,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecFram
 from src.env.mslug_env import CaptureRegion, MetalSlugEnv
 from src.env.region_config import load_in_game_checks, load_region_values
 from src.env.window_detect import detect_retroarch_window
+from src.impala_cnn import ImpalaCNN
 
 
 def linear_schedule(initial_value: float):
@@ -307,6 +310,116 @@ class BestModelCallback(BaseCallback):
         return True
 
 
+class DeathPenaltyCurriculumCallback(BaseCallback):
+    """Gradually increases death penalties as the agent's rolling avg score improves.
+
+    Milestones are (score_threshold, penalty_value) tuples sorted by threshold.
+    When rolling avg score exceeds a threshold, penalties are bumped to the next level.
+    Uses env_method to update penalties on SubprocVecEnv workers.
+    """
+
+    DEFAULT_MILESTONES = [
+        (0,      -5.0),   # -15 total, breakeven ~8k
+        (25000,  -8.0),   # -24 total, breakeven ~12k
+        (40000, -12.0),   # -36 total, breakeven ~18k
+        (50000, -15.0),   # -45 total, breakeven ~23k
+        (60000, -18.0),   # -54 total, breakeven ~27k
+        (75000, -25.0),   # -75 total, breakeven ~38k
+        (90000, -33.0),   # -99 total, breakeven ~50k
+        (110000,-42.0),   # -126 total, breakeven ~63k
+        (130000,-50.0),   # -150 total, breakeven ~75k
+    ]
+
+    def __init__(self, milestones=None, window: int = 100, cooldown_episodes: int = 200, verbose: int = 1):
+        super().__init__(verbose=0)
+        self.milestones = sorted(milestones or self.DEFAULT_MILESTONES, key=lambda x: x[0])
+        self.window = max(1, window)
+        self.cooldown_episodes = max(0, cooldown_episodes)
+        self._scores: deque = deque(maxlen=window)
+        self._current_level = 0
+        self._regression_count = 0
+        self._cooldown_remaining = 0
+        self._print = verbose >= 1
+
+    def _apply_penalty(self, penalty_value: float):
+        """Set death penalties on all underlying envs."""
+        venv = self.training_env
+        # Walk through wrapper stack to find the base vec env
+        while hasattr(venv, 'venv'):
+            venv = venv.venv
+        n_envs = venv.num_envs
+        for i in range(n_envs):
+            venv.env_method("set_death_penalties", penalty_value, indices=[i])
+        if self._print:
+            total = penalty_value * 3
+            breakeven = abs(total) / 0.002
+            print("[curriculum] Death penalty set to %.1f each (%.1f total, breakeven ~%.0fk score)"
+                  % (penalty_value, total, breakeven / 1000))
+
+    def _on_training_start(self):
+        """Apply initial penalty level."""
+        _, penalty = self.milestones[self._current_level]
+        self._apply_penalty(penalty)
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos") or []
+        dones = self.locals.get("dones")
+        if dones is None:
+            return True
+        done_flags = list(np.asarray(dones).astype(bool))
+        episodes_this_step = 0
+        for idx, info in enumerate(infos):
+            if not info:
+                continue
+            is_done = done_flags[idx] if idx < len(done_flags) else False
+            if not is_done:
+                continue
+            episodes_this_step += 1
+            score = info.get("score")
+            if score is not None:
+                self._scores.append(float(score))
+
+        # Decrement cooldown on each completed episode
+        if episodes_this_step > 0:
+            self._cooldown_remaining = max(0, self._cooldown_remaining - episodes_this_step)
+
+        # Only check milestones when we have enough data
+        if len(self._scores) < self.window:
+            return True
+
+        avg = sum(self._scores) / len(self._scores)
+        next_level = self._current_level + 1
+        if next_level < len(self.milestones) and self._cooldown_remaining <= 0:
+            threshold, penalty = self.milestones[next_level]
+            if avg >= threshold:
+                self._current_level = next_level
+                self._apply_penalty(penalty)
+                self._regression_count = 0
+                if self._print:
+                    print("[curriculum] Rolling avg score %.0f exceeded threshold %d → level %d/%d"
+                          % (avg, threshold, self._current_level + 1, len(self.milestones)))
+
+        # Check for DOWNGRADE — if avg drops below 80% of current level's threshold
+        if self._current_level > 0:
+            current_threshold, _ = self.milestones[self._current_level]
+            downgrade_threshold = current_threshold * 0.8
+            if avg < downgrade_threshold:
+                self._regression_count += 1
+                if self._regression_count >= 100:
+                    self._current_level -= 1
+                    _, penalty = self.milestones[self._current_level]
+                    self._apply_penalty(penalty)
+                    self._regression_count = 0
+                    self._cooldown_remaining = self.cooldown_episodes
+                    if self._print:
+                        print("[curriculum] DOWNGRADE: Rolling avg score %.0f below %.0f → level %d/%d (cooldown %d eps)"
+                              % (avg, downgrade_threshold, self._current_level + 1, len(self.milestones), self.cooldown_episodes))
+            else:
+                self._regression_count = 0
+
+        return True
+
+
 class EpisodeControlCallback(BaseCallback):
     """
     Tracks ended episodes, optionally records periodic evaluation videos,
@@ -445,10 +558,10 @@ def make_env(
     score_clip = float(os.environ.get("SCORE_CLIP", "2.0"))
     time_penalty = float(os.environ.get("TIME_PENALTY", "-0.0005"))
     # HP loss penalties: applied when HP drops during gameplay (before game_mode death)
-    hp2 = float(os.environ.get("HP_LOSS_PENALTY_2", "-2.0"))  # HP drops from 2
-    hp1 = float(os.environ.get("HP_LOSS_PENALTY_1", "-2.0"))  # HP drops from 1
+    hp2 = float(os.environ.get("HP_LOSS_PENALTY_2", "-5.0"))  # HP drops from 2
+    hp1 = float(os.environ.get("HP_LOSS_PENALTY_1", "-5.0"))  # HP drops from 1
     hp_loss_penalties = {2: hp2, 1: hp1}
-    game_over_penalty = float(os.environ.get("GAME_OVER_PENALTY", "-2.0"))
+    game_over_penalty = float(os.environ.get("GAME_OVER_PENALTY", "-5.0"))
     # Resource management rewards
     grenade_pickup_reward = float(os.environ.get("GRENADE_PICKUP_REWARD", "0.001"))
     ammo_pickup_reward = float(os.environ.get("AMMO_PICKUP_REWARD", "0.002"))
@@ -458,11 +571,13 @@ def make_env(
     score_stall_penalty = float(os.environ.get("SCORE_STALL_PENALTY", "-0.002"))
     jump_bonus = float(os.environ.get("JUMP_BONUS", "0.0"))
     jump_bonus_stuck = float(os.environ.get("JUMP_BONUS_STUCK", "0.02"))
+    survival_bonus = float(os.environ.get("SURVIVAL_BONUS", "0.01"))
     stuck_threshold_steps = int(os.environ.get("STUCK_THRESHOLD_STEPS", "10"))
     progress_scale_x = float(os.environ.get("PROGRESS_SCALE_X", "0.0"))
     max_episode_steps = int(os.environ.get("MAX_EPISODE_STEPS", "3000"))
-    frame_skip = int(os.environ.get("FRAME_SKIP", "6"))
+    frame_skip = int(os.environ.get("FRAME_SKIP", "3"))
     action_hold_s = float(os.environ.get("ACTION_HOLD_S", "0.005"))
+    sticky_action_prob = float(os.environ.get("STICKY_ACTION_PROB", "0.25"))
     region = CaptureRegion(
         left=region_values["left"],
         top=region_values["top"],
@@ -518,9 +633,11 @@ def make_env(
         score_stall_penalty=score_stall_penalty,
         jump_bonus=jump_bonus,
         jump_bonus_stuck=jump_bonus_stuck,
+        survival_bonus=survival_bonus,
         stuck_threshold_steps=stuck_threshold_steps,
         progress_scale_x=progress_scale_x,
         max_episode_steps=max_episode_steps,
+        sticky_action_prob=sticky_action_prob,
         frame_skip=frame_skip,
         action_hold_s=action_hold_s,
         verbose=verbose,
@@ -651,10 +768,10 @@ def main():
                         help="FPS for saved video clips (default: 20)")
     parser.add_argument("--video-dir", type=str, default=os.environ.get("VIDEO_DIR", "outputs/videos"),
                         help="Directory for saved video clips (default: outputs/videos)")
-    parser.add_argument("--learning-rate", type=float, default=float(os.environ.get("LEARNING_RATE", "2.5e-4")),
-                        help="PPO learning rate (default: 2.5e-4, env LEARNING_RATE)")
-    parser.add_argument("--ent-coef", type=float, default=float(os.environ.get("ENT_COEF", "0.01")),
-                        help="PPO entropy coefficient for exploration (default: 0.01, env ENT_COEF)")
+    parser.add_argument("--learning-rate", type=float, default=float(os.environ.get("LEARNING_RATE", "5e-5")),
+                        help="PPO learning rate (default: 5e-5, env LEARNING_RATE)")
+    parser.add_argument("--ent-coef", type=float, default=float(os.environ.get("ENT_COEF", "0.02")),
+                        help="PPO entropy coefficient for exploration (default: 0.02, env ENT_COEF)")
     parser.add_argument("--n-steps", type=int, default=int(os.environ.get("N_STEPS", "512")),
                         help="Rollout steps per PPO update (default: 512, env N_STEPS)")
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("BATCH_SIZE", "128")),
@@ -669,6 +786,12 @@ def main():
                         help="PPO clip range (default: 0.1, env CLIP_RANGE)")
     parser.add_argument("--clip-range-vf", type=float, default=float(os.environ.get("CLIP_RANGE_VF", "0.1")),
                         help="PPO value function clip range (default: 0.1, env CLIP_RANGE_VF). Set to -1 to disable.")
+    parser.add_argument("--target-kl", type=float, default=float(os.environ.get("TARGET_KL", "0.01")),
+                        help="Target KL divergence for early stopping of PPO updates (default: 0.01, env TARGET_KL). Set to 0 to disable.")
+    parser.add_argument("--adam-beta1", type=float, default=float(os.environ.get("ADAM_BETA1", "0.9")),
+                        help="Adam optimizer beta1 (default: 0.9, env ADAM_BETA1)")
+    parser.add_argument("--adam-beta2", type=float, default=float(os.environ.get("ADAM_BETA2", "0.9")),
+                        help="Adam optimizer beta2 (default: 0.9, env ADAM_BETA2). Matched betas prevent policy collapse.")
     parser.add_argument("--use-linear-schedule", action="store_true",
                         default=os.environ.get("USE_LINEAR_SCHEDULE", "1").lower() in ("1", "true", "yes"),
                         help="Anneal LR and clip_range linearly to 0 over training (default: on)")
@@ -826,35 +949,42 @@ def main():
         return _init
 
     n_envs = args.num_envs
-    if n_envs > 1:
-        env = SubprocVecEnv([make_env_fn(i) for i in range(n_envs)])
-        print("Using SubprocVecEnv with %d parallel environments" % n_envs)
-    else:
-        env = DummyVecEnv([make_env_fn(0)])
-    env = VecFrameStack(env, n_stack=4)
-    # VecNormalize is applied after resume check below (needs special handling for loading stats)
+
+    def build_vec_env():
+        """Create SubprocVecEnv/DummyVecEnv + VecFrameStack (no VecNormalize)."""
+        if n_envs > 1:
+            venv = SubprocVecEnv([make_env_fn(i) for i in range(n_envs)])
+            print("Using SubprocVecEnv with %d parallel environments" % n_envs)
+        else:
+            venv = DummyVecEnv([make_env_fn(0)])
+        return VecFrameStack(venv, n_stack=4)
+
+    env = build_vec_env()
     print("Wrappers: VecFrameStack(4) + VecNormalize(norm_obs=False, norm_reward=True, clip_reward=10)")
+    print("CNN: ImpalaCNN (ResNet 16->32->32 + GAP, features_dim=256)")
 
     print("Effective training params:")
     lr_display = "lin_schedule(%s)" % args.learning_rate if args.use_linear_schedule else str(args.learning_rate)
     clip_display = "lin_schedule(%s)" % args.clip_range if args.use_linear_schedule else str(args.clip_range)
     clip_vf_display = "None" if args.clip_range_vf < 0 else str(args.clip_range_vf)
+    target_kl_display = str(args.target_kl) if args.target_kl > 0 else "None"
     print(
-        "  PPO: lr=%s clip_range=%s clip_range_vf=%s n_steps=%s batch_size=%s n_epochs=%s "
-        "gamma=%s gae_lambda=%s ent_coef=%s num_envs=%s sb3_verbose=%s"
-        % (lr_display, clip_display, clip_vf_display, args.n_steps, args.batch_size, args.n_epochs,
-           args.gamma, args.gae_lambda, args.ent_coef, args.num_envs, sb3_verbose)
+        "  PPO: lr=%s clip_range=%s clip_range_vf=%s target_kl=%s n_steps=%s batch_size=%s n_epochs=%s "
+        "gamma=%s gae_lambda=%s ent_coef=%s num_envs=%s adam_betas=(%s,%s) sb3_verbose=%s"
+        % (lr_display, clip_display, clip_vf_display, target_kl_display, args.n_steps, args.batch_size, args.n_epochs,
+           args.gamma, args.gae_lambda, args.ent_coef, args.num_envs, args.adam_beta1, args.adam_beta2, sb3_verbose)
     )
     print(
-        "  Reward/env: score_scale=%s score_clip=%s progress_scale=%s time_penalty=%s hp_loss={2:%s,1:%s} game_over=%s"
+        "  Reward/env: score_scale=%s score_clip=%s progress_scale=%s time_penalty=%s hp_loss={2:%s,1:%s} game_over=%s survival_bonus=%s"
         % (
             os.environ.get("SCORE_SCALE", "0.002"),
             os.environ.get("SCORE_CLIP", "2.0"),
             os.environ.get("PROGRESS_SCALE", "0.01"),
             os.environ.get("TIME_PENALTY", "-0.0005"),
-            os.environ.get("HP_LOSS_PENALTY_2", "-2.0"),
-            os.environ.get("HP_LOSS_PENALTY_1", "-2.0"),
-            os.environ.get("GAME_OVER_PENALTY", "-2.0"),
+            os.environ.get("HP_LOSS_PENALTY_2", "-5.0"),
+            os.environ.get("HP_LOSS_PENALTY_1", "-5.0"),
+            os.environ.get("GAME_OVER_PENALTY", "-5.0"),
+            os.environ.get("SURVIVAL_BONUS", "0.01"),
         )
     )
     print(
@@ -880,15 +1010,16 @@ def main():
         )
     )
     print(
-        "  Env: player_x_addr=%s capture=(%s,%s,%s,%s) frame_skip=%s action_hold=%s"
+        "  Env: player_x_addr=%s capture=(%s,%s,%s,%s) frame_skip=%s action_hold=%s sticky_prob=%s"
         % (
             os.environ.get("PLAYER_X_ADDR", "3FB84E"),
             resolved_region["left"],
             resolved_region["top"],
             resolved_region["width"],
             resolved_region["height"],
-            os.environ.get("FRAME_SKIP", "6"),
+            os.environ.get("FRAME_SKIP", "3"),
             os.environ.get("ACTION_HOLD_S", "0.005"),
+            os.environ.get("STICKY_ACTION_PROB", "0.25"),
         )
     )
     print(
@@ -901,6 +1032,9 @@ def main():
             args.video_dir,
         )
     )
+
+    print("  Death penalty curriculum: %s"
+          % " → ".join("%.0fk:%.0f" % (t / 1000, p) for t, p in DeathPenaltyCurriculumCallback.DEFAULT_MILESTONES))
 
     # Checkpoints every N steps (and at end). Lets you resume or pick the best.
     checkpoint_cb = CheckpointCallback(
@@ -935,12 +1069,15 @@ def main():
     latest_copy_cb = LatestModelCopyCallback(models_dir, latest_models_dir, run_name=run_name)
     vec_norm_cb = VecNormalizeSaveCallback(models_dir, save_freq=args.checkpoint_every)
     best_model_cb = BestModelCallback(save_path=models_dir, window=10)
-    callbacks = CallbackList([checkpoint_cb, latest_copy_cb, vec_norm_cb, best_model_cb, score_cb, episode_cb])
+    curriculum_cb = DeathPenaltyCurriculumCallback(window=100, verbose=1)
+    callbacks = CallbackList([checkpoint_cb, latest_copy_cb, vec_norm_cb, best_model_cb, score_cb, episode_cb, curriculum_cb])
 
     # Apply linear schedule annealing for LR and clip_range (Atari standard)
     lr = linear_schedule(args.learning_rate) if args.use_linear_schedule else args.learning_rate
     clip_range = linear_schedule(args.clip_range) if args.use_linear_schedule else args.clip_range
     clip_range_vf = None if args.clip_range_vf < 0 else args.clip_range_vf
+    target_kl = args.target_kl if args.target_kl > 0 else None
+    optimizer_kwargs = {"betas": (args.adam_beta1, args.adam_beta2)}
 
     if args.resume:
         print(f"Resuming from {args.resume}")
@@ -966,9 +1103,17 @@ def main():
             ent_coef=args.ent_coef,
             clip_range=clip_range,
             clip_range_vf=clip_range_vf,
+            target_kl=target_kl,
         )
+        # Override Adam betas on resume (optimizer state is rebuilt anyway)
+        model.policy.optimizer_kwargs = optimizer_kwargs
     else:
         env = VecNormalize(env, norm_obs=False, norm_reward=True, clip_reward=10.0)
+        policy_kwargs = {
+            "optimizer_kwargs": optimizer_kwargs,
+            "features_extractor_class": ImpalaCNN,
+            "features_extractor_kwargs": {"features_dim": 256},
+        }
         model = PPO(
             "CnnPolicy",
             env,
@@ -982,8 +1127,10 @@ def main():
             ent_coef=args.ent_coef,
             clip_range=clip_range,
             clip_range_vf=clip_range_vf,
+            target_kl=target_kl,
             tensorboard_log=tb_dir,
             device=device,
+            policy_kwargs=policy_kwargs,
         )
 
     def _save_model_and_stats():
@@ -995,28 +1142,126 @@ def main():
         shutil.copy2(os.path.join(models_dir, "vec_normalize.pkl"),
                       os.path.join(latest_models_dir, "%s_vec_normalize.pkl" % run_name))
 
+    crash_checkpoint_path = os.path.join(models_dir, "ppo_mslug6_crash_recovery")
+    crash_vec_norm_path = os.path.join(models_dir, "vec_normalize_crash_recovery.pkl")
+    crash_count = 0
+    _CRASH_ERRORS = (EOFError, ConnectionResetError, BrokenPipeError)
+
+    def _recover_from_crash():
+        """Save current state, rebuild env, reload model, restore curriculum."""
+        nonlocal env, model, crash_count, callbacks
+        crash_count += 1
+        print("[crash-recovery] Worker crashed (crash #%d), saving and rebuilding..." % crash_count)
+        # Save current model + VecNormalize stats
+        try:
+            model.save(crash_checkpoint_path)
+            print("[crash-recovery] Model saved to %s" % crash_checkpoint_path)
+        except Exception as e:
+            print("[crash-recovery] Warning: could not save model: %s" % e)
+        try:
+            env.save(crash_vec_norm_path)
+            print("[crash-recovery] VecNormalize stats saved to %s" % crash_vec_norm_path)
+        except Exception as e:
+            print("[crash-recovery] Warning: could not save VecNormalize: %s" % e)
+        # Close broken env (may raise)
+        try:
+            env.close()
+        except Exception:
+            pass
+        # Check RetroArch health on each port before rebuilding
+        for i in range(n_envs):
+            port = 55355 + i
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.settimeout(1.0)
+                sock.sendto(b"GET_STATUS\n", ("127.0.0.1", port))
+                sock.recvfrom(4096)
+                sock.close()
+                print("[crash-recovery] RetroArch on port %d is responsive" % port)
+            except (socket.timeout, OSError):
+                sock.close()
+                print("[crash-recovery] RetroArch on port %d is NOT responding" % port)
+                print("[crash-recovery] FATAL: cannot rebuild env — RetroArch is dead. "
+                      "Checkpoint saved at %s" % crash_checkpoint_path)
+                print("[crash-recovery] Restart container to resume from crash checkpoint.")
+                sys.exit(1)
+        # Rebuild env from scratch (with timeout to avoid infinite hang)
+        def _alarm_handler(signum, frame):
+            raise TimeoutError("build_vec_env timed out")
+        old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+        signal.alarm(120)
+        try:
+            new_env = build_vec_env()
+            signal.alarm(0)
+        except TimeoutError:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            print("[crash-recovery] FATAL: env rebuild timed out after 120s. "
+                  "Checkpoint saved at %s" % crash_checkpoint_path)
+            print("[crash-recovery] Restart container to resume from crash checkpoint.")
+            sys.exit(1)
+        signal.signal(signal.SIGALRM, old_handler)
+        if os.path.exists(crash_vec_norm_path):
+            new_env = VecNormalize.load(crash_vec_norm_path, new_env)
+            new_env.training = True
+        else:
+            new_env = VecNormalize(new_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
+        env = new_env
+        # Reload model with new env
+        if os.path.exists(crash_checkpoint_path + ".zip"):
+            model = PPO.load(
+                crash_checkpoint_path, env=env, device=device,
+                learning_rate=lr, n_steps=args.n_steps, batch_size=args.batch_size,
+                n_epochs=args.n_epochs, gamma=args.gamma, gae_lambda=args.gae_lambda,
+                ent_coef=args.ent_coef, clip_range=clip_range, clip_range_vf=clip_range_vf,
+                target_kl=target_kl,
+            )
+            model.policy.optimizer_kwargs = optimizer_kwargs
+        # Restore curriculum callback state — re-apply current penalty level
+        curriculum_cb._apply_penalty(curriculum_cb.milestones[curriculum_cb._current_level][1])
+        # Rebuild callback list so all callbacks point to new model/env
+        callbacks = CallbackList([checkpoint_cb, latest_copy_cb, vec_norm_cb, best_model_cb, score_cb, episode_cb, curriculum_cb])
+        print("[crash-recovery] Recovered (crash #%d), continuing training..." % crash_count)
+
     if args.run_until_interrupt:
         print("Training until you press Ctrl+C (no step cap). Chunk size: %s steps." % args.chunk)
         total_done = 0
         try:
             while True:
-                model.learn(
-                    total_timesteps=args.chunk,
-                    callback=callbacks,
-                    reset_num_timesteps=False,
-                )
-                total_done += args.chunk
-                _save_model_and_stats()
-                print("Chunk done. Total steps so far: %s. Model saved. Continuing..." % total_done)
+                try:
+                    model.learn(
+                        total_timesteps=args.chunk,
+                        callback=callbacks,
+                        reset_num_timesteps=False,
+                    )
+                    total_done += args.chunk
+                    _save_model_and_stats()
+                    print("Chunk done. Total steps so far: %s. Model saved. Continuing..." % total_done)
+                except _CRASH_ERRORS as e:
+                    print("[crash-recovery] Caught %s: %s" % (type(e).__name__, e))
+                    _recover_from_crash()
+                    total_done = model.num_timesteps
         except KeyboardInterrupt:
             _save_model_and_stats()
             print("\nStopped by user. Total steps: %s. Model saved to %s/ppo_mslug6_final.zip" % (total_done, models_dir))
     else:
         print(f"Training for {args.timesteps} timesteps...")
-        model.learn(
-            total_timesteps=args.timesteps,
-            callback=callbacks,
-        )
+        timesteps_remaining = args.timesteps
+        while timesteps_remaining > 0:
+            try:
+                model.learn(
+                    total_timesteps=timesteps_remaining,
+                    callback=callbacks,
+                    reset_num_timesteps=(crash_count == 0),
+                )
+                break  # completed successfully
+            except _CRASH_ERRORS as e:
+                print("[crash-recovery] Caught %s: %s" % (type(e).__name__, e))
+                _recover_from_crash()
+                timesteps_remaining = args.timesteps - model.num_timesteps
+                if timesteps_remaining <= 0:
+                    break
+                print("[crash-recovery] %d timesteps remaining" % timesteps_remaining)
         _save_model_and_stats()
         print("Model saved to %s/ppo_mslug6_final.zip" % models_dir)
 

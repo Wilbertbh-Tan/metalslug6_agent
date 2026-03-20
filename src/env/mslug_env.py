@@ -164,14 +164,15 @@ class MetalSlugEnv(gym.Env):
         "score_reward", "progress_right", "progress_left", "time_penalty",
         "x_progress", "hp_loss", "game_over",
         "grenade_pickup", "grenade_waste", "ammo_pickup", "ammo_waste",
-        "score_stall", "jump_bonus",
+        "score_stall", "jump_bonus", "survival_bonus",
     )
 
     def __init__(
         self,
         region: CaptureRegion | None = None,
         action_hold_s: float = 0.005,
-        frame_skip: int = 6,
+        frame_skip: int = 3,
+        sticky_action_prob: float = 0.25,
         shoot_key: str = "z",
         jump_key: str = "x",
         grenade_key: str = "a",
@@ -202,7 +203,7 @@ class MetalSlugEnv(gym.Env):
         score_clip: float = 2.0,
         time_penalty: float = -0.0005,
         hp_loss_penalties: dict[int, float] | None = None,
-        game_over_penalty: float = -2.0,
+        game_over_penalty: float = -5.0,
         grenade_pickup_reward: float = 0.001,
         ammo_pickup_reward: float = 0.002,
         grenade_waste_penalty: float = -0.0001,
@@ -211,6 +212,7 @@ class MetalSlugEnv(gym.Env):
         score_stall_penalty: float = -0.002,
         jump_bonus: float = 0.0,
         jump_bonus_stuck: float = 0.02,
+        survival_bonus: float = 0.01,
         stuck_threshold_steps: int = 10,
         progress_scale_x: float = 0.01,
         max_episode_steps: int = 3000,
@@ -221,6 +223,9 @@ class MetalSlugEnv(gym.Env):
         self.region = region or CaptureRegion(left=1116, top=345)
         self.action_hold_s = action_hold_s
         self.frame_skip = max(1, int(frame_skip))
+        self.sticky_action_prob = float(sticky_action_prob)
+        self._prev_action = None  # for sticky actions
+        self._rng = np.random.RandomState()
         self.shoot_key = shoot_key
         self.jump_key = jump_key
         self.grenade_key = grenade_key
@@ -277,7 +282,7 @@ class MetalSlugEnv(gym.Env):
         self.time_penalty = time_penalty
         # HP loss penalties: keyed by HP value BEFORE the drop
         # e.g. {2: -1.0} means -1.0 when HP drops from 2 to 1
-        self._hp_loss_penalties = hp_loss_penalties if hp_loss_penalties is not None else {2: -2.0, 1: -2.0}
+        self._hp_loss_penalties = hp_loss_penalties if hp_loss_penalties is not None else {2: -5.0, 1: -5.0}
         self._game_over_penalty = game_over_penalty
         # Resource management rewards
         self._grenade_pickup_reward = grenade_pickup_reward
@@ -288,6 +293,7 @@ class MetalSlugEnv(gym.Env):
         self._score_stall_penalty = score_stall_penalty
         self._jump_bonus = jump_bonus
         self._jump_bonus_stuck = jump_bonus_stuck
+        self._survival_bonus = survival_bonus
         self._stuck_threshold_steps = max(1, int(stuck_threshold_steps))
         self._progress_scale_x = progress_scale_x
         self._max_episode_steps = max(0, int(max_episode_steps))
@@ -329,7 +335,10 @@ class MetalSlugEnv(gym.Env):
         self._cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._cmd_sock.settimeout(udp_timeout)
         self.action_space = gym.spaces.MultiDiscrete([5, 3, 3])
-        self.observation_space = gym.spaces.Box(0, 255, shape=(84, 84, 1), dtype=np.uint8)
+        obs_w = int(os.environ.get("OBS_WIDTH", "160"))
+        obs_h = int(os.environ.get("OBS_HEIGHT", "120"))
+        self._obs_size = (obs_w, obs_h)  # (width, height) for cv2.resize
+        self.observation_space = gym.spaces.Box(0, 255, shape=(obs_h, obs_w, 1), dtype=np.uint8)
         # Set DISPLAY before creating mss/Xlib handles so each SubprocVecEnv
         # worker captures from its own Xvfb instance.
         if display is not None:
@@ -337,6 +346,11 @@ class MetalSlugEnv(gym.Env):
         self.sct = mss.mss()
         pyautogui.FAILSAFE = True
         self._kb = XlibKeyboard()
+
+    def set_death_penalties(self, penalty_value: float):
+        """Update all death penalties to the given value (called by curriculum callback)."""
+        self._hp_loss_penalties = {2: penalty_value, 1: penalty_value}
+        self._game_over_penalty = penalty_value
 
     def _grab_raw(self):
         frame = np.array(self.sct.grab(self.region.__dict__))
@@ -350,7 +364,7 @@ class MetalSlugEnv(gym.Env):
         return cv2.cvtColor(frame, cv2.COLOR_BGRA2RGB)
 
     def _preprocess(self, gray_frame):
-        frame = cv2.resize(gray_frame, (84, 84))
+        frame = cv2.resize(gray_frame, self._obs_size)
         return frame[..., None]
 
     def _tap_key(self, key: str):
@@ -736,6 +750,13 @@ class MetalSlugEnv(gym.Env):
         # SB3 passes MultiDiscrete as numpy array; ensure flat int array.
         action = np.asarray(action).flatten().astype(int)
 
+        # Sticky actions: with some probability, repeat the previous action
+        # instead of the requested one. Prevents brittle memorized sequences.
+        if self._prev_action is not None and self.sticky_action_prob > 0:
+            if self._rng.random() < self.sticky_action_prob:
+                action = self._prev_action.copy()
+        self._prev_action = action.copy()
+
         # Safety: if we've never seen game_mode==1 and taken 50+ steps,
         # the game is stuck at menu/loading. Force terminate so reset() retries.
         if not self._seen_alive and self._step_count >= 50:
@@ -850,6 +871,12 @@ class MetalSlugEnv(gym.Env):
         elif pr < 0:
             self._track("progress_left", pr)
         self._track("time_penalty", reward_info["time_penalty"])
+
+        # Survival bonus: small positive reward for each step alive
+        if self._survival_bonus > 0:
+            reward += self._survival_bonus
+            self._episode_reward += self._survival_bonus
+            self._track("survival_bonus", self._survival_bonus)
 
         # Read extended state (lives/HP, bombs, arms, time) for info dict + HP tracking
         lives, bombs, arms, game_time = self._read_extended_state()
@@ -1056,6 +1083,7 @@ class MetalSlugEnv(gym.Env):
         self._deaths_this_episode = 0
         self._score_stall_steps = 0
         self._stuck_steps = 0
+        self._prev_action = None  # reset sticky action state
         self._use_individual_reads = False  # reset fallback flag each episode
         # Read initial player X position for stuck detection
         self._prev_x = self._read_player_x()
