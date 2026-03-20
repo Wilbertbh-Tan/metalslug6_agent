@@ -16,6 +16,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from src.env.mslug_env import CaptureRegion, MetalSlugEnv  # noqa: E402
 
 SCORE_ADDR = os.environ.get("SCORE_ADDR", "003869BC")
+# Boot detection uses 003868D1 (static 'starting lives config' byte, always 0x03).
+# The real gameplay lives counter at 003D3B07 may not be populated during BIOS boot.
 LIVES_ADDR = os.environ.get("LIVES_ADDR", "003868D1")
 GAME_STATE_ADDR = os.environ.get("GAME_STATE_ADDR", "003868D0")
 CAPTURE_LEFT = int(os.environ.get("CAPTURE_LEFT", "0"))

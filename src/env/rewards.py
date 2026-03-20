@@ -5,10 +5,10 @@ def compute_reward(
     action,
     curr_score: int,
     prev_score: int,
-    score_scale: float = 0.005,
-    score_clip: float = 2.0,
-    progress_scale: float = 0.05,
-    time_penalty: float = -0.005,
+    score_scale: float = 0.0001,
+    score_clip: float = 1.0,
+    progress_scale: float = 0.005,
+    time_penalty: float = -0.0005,
 ) -> tuple[float, dict]:
     """Compute step reward from score delta, progress, and time penalty.
 
@@ -25,7 +25,7 @@ def compute_reward(
     if movement == 2:  # right
         progress_reward = progress_scale
     elif movement == 1:  # left
-        progress_reward = -progress_scale * 0.2
+        progress_reward = -0.001
 
     total = score_reward + progress_reward + time_penalty
     info = {

@@ -12,9 +12,9 @@ class PPOAgent(BaseAgent):
         self.model = PPO.load(model_path)
         self.deterministic = deterministic
 
-    def predict(self, obs) -> int:
+    def predict(self, obs):
         action, _ = self.model.predict(obs, deterministic=self.deterministic)
-        return int(action)
+        return action
 
     def learn(self, env, **kwargs):
         """Train the PPO model — delegates to SB3."""

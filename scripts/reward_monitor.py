@@ -78,8 +78,10 @@ def main():
     parser.add_argument("--max-episodes", type=int, default=0,
                         help="Stop after N episodes (0 = unlimited)")
     parser.add_argument("--game-state-addr", default="003868D0", help="RAM address for game_state byte")
-    parser.add_argument("--lives-addr", default="003868D1", help="RAM address for lives byte")
-    parser.add_argument("--credits-addr", default="003868D3", help="RAM address for credits byte")
+    parser.add_argument("--lives-addr", default="003D3B07", help="RAM address for lives byte (actual counter)")
+    parser.add_argument("--bomb-addr", default="003D3F45", help="RAM address for bombs byte")
+    parser.add_argument("--arms-addr", default="003D3F48", help="RAM address for arms/ammo (2 bytes LE)")
+    parser.add_argument("--time-addr", default="003FB939", help="RAM address for in-game timer (BCD)")
     parser.add_argument("--score-addr", default="003869BC", help="RAM address for 4-byte BCD score")
     args = parser.parse_args()
 
@@ -89,7 +91,8 @@ def main():
 
     print(f"Reward monitor started: {args.host}:{args.port} @ {args.poll_hz}Hz")
     print(f"  lives_addr={args.lives_addr}  game_state_addr={args.game_state_addr}")
-    print(f"  credits_addr={args.credits_addr}  score_addr={args.score_addr}")
+    print(f"  bomb_addr={args.bomb_addr}  arms_addr={args.arms_addr}  time_addr={args.time_addr}")
+    print(f"  score_addr={args.score_addr}")
     print(f"  reset_delay={args.reset_delay}s")
     print(f"  stable_threshold={STABLE_THRESHOLD}")
     print()
@@ -100,7 +103,9 @@ def main():
 
     stable_lives = StableValue()
     stable_gs = StableValue()
-    stable_cred = StableValue()
+    stable_bombs = StableValue()
+    stable_arms = StableValue()
+    stable_time = StableValue()
 
     # Read initial score
     score_raw = read_ram(sock, args.host, args.port, args.score_addr, 4)
@@ -114,18 +119,24 @@ def main():
             # Read RAM
             lives_raw = read_ram(sock, args.host, args.port, args.lives_addr, 1)
             gs_raw = read_ram(sock, args.host, args.port, args.game_state_addr, 1)
-            cred_raw = read_ram(sock, args.host, args.port, args.credits_addr, 1)
+            bomb_raw = read_ram(sock, args.host, args.port, args.bomb_addr, 1)
+            arms_raw = read_ram(sock, args.host, args.port, args.arms_addr, 2)
+            time_raw = read_ram(sock, args.host, args.port, args.time_addr, 1)
             score_raw = read_ram(sock, args.host, args.port, args.score_addr, 4)
 
             lives_val = lives_raw[0] if lives_raw else None
             gs_val = gs_raw[0] if gs_raw else None
-            cred_val = cred_raw[0] if cred_raw else None
+            bomb_val = bomb_raw[0] if bomb_raw else None
+            arms_val = (arms_raw[0] | (arms_raw[1] << 8)) if arms_raw and len(arms_raw) == 2 else None
+            time_val = time_raw[0] if time_raw else None
             score = decode_bcd_score(score_raw)
 
             # Update stable trackers and log confirmed changes
             lives_changed = stable_lives.update(lives_val)
             gs_changed = stable_gs.update(gs_val)
-            cred_changed = stable_cred.update(cred_val)
+            bombs_changed = stable_bombs.update(bomb_val)
+            arms_changed = stable_arms.update(arms_val)
+            time_changed = stable_time.update(time_val)
 
             if lives_changed:
                 gs_str = f"gs=0x{stable_gs.confirmed:02X}" if stable_gs.confirmed is not None else ""
@@ -135,8 +146,14 @@ def main():
                 gs_hex = f"0x{stable_gs.confirmed:02X}" if stable_gs.confirmed is not None else "??"
                 print(f"  [{elapsed:7.1f}s] game_state -> {gs_hex}")
 
-            if cred_changed:
-                print(f"  [{elapsed:7.1f}s] credits -> {stable_cred.confirmed}")
+            if bombs_changed:
+                print(f"  [{elapsed:7.1f}s] bombs -> {stable_bombs.confirmed}")
+
+            if arms_changed:
+                print(f"  [{elapsed:7.1f}s] arms -> {stable_arms.confirmed}")
+
+            if time_changed:
+                print(f"  [{elapsed:7.1f}s] time -> {stable_time.confirmed}")
 
             # Score changes (no stabilization needed — BCD decode filters garbage)
             if score is not None:
@@ -178,7 +195,9 @@ def main():
                 lives_seen_positive = False
                 stable_lives.reset()
                 stable_gs.reset()
-                stable_cred.reset()
+                stable_bombs.reset()
+                stable_arms.reset()
+                stable_time.reset()
                 ep_start = time.monotonic()
                 score_raw = read_ram(sock, args.host, args.port, args.score_addr, 4)
                 prev_score = decode_bcd_score(score_raw) or 0

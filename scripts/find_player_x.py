@@ -22,10 +22,10 @@ Usage:
 Default scan region: 003D0000 to 003E0000 (where other gameplay state lives).
 Also scans 00380000-00390000 (where game_state/score live).
 """
-
 import argparse
 import os
 import socket
+import struct
 import sys
 import time
 
@@ -87,7 +87,6 @@ def extract_16bit_le(data, addr):
 def send_key(key, hold_s=0.05):
     """Send a keypress via pyautogui."""
     import pyautogui
-
     pyautogui.PAUSE = 0
     pyautogui.keyDown(key)
     time.sleep(hold_s)
@@ -97,7 +96,6 @@ def send_key(key, hold_s=0.05):
 def hold_key(key, duration_s):
     """Hold a key for a duration."""
     import pyautogui
-
     pyautogui.PAUSE = 0
     pyautogui.keyDown(key)
     time.sleep(duration_s)
@@ -115,27 +113,18 @@ def main():
     parser = argparse.ArgumentParser(description="Find player X RAM address")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=55355)
-    parser.add_argument(
-        "--regions",
-        nargs="*",
-        default=None,
-        help="Hex address pairs: START1 END1 START2 END2 ...",
-    )
-    parser.add_argument(
-        "--chunk", type=int, default=256, help="Bytes per UDP read (default: 256)"
-    )
-    parser.add_argument(
-        "--move-duration",
-        type=float,
-        default=2.0,
-        help="Seconds to hold right between snapshots",
-    )
+    parser.add_argument("--regions", nargs="*", default=None,
+                        help="Hex address pairs: START1 END1 START2 END2 ...")
+    parser.add_argument("--chunk", type=int, default=256,
+                        help="Bytes per UDP read (default: 256)")
+    parser.add_argument("--move-duration", type=float, default=2.0,
+                        help="Seconds to hold right between snapshots")
     args = parser.parse_args()
 
     # Default scan regions: where known gameplay addresses live
     if args.regions:
         hex_vals = [int(x, 16) for x in args.regions]
-        regions = [(hex_vals[i], hex_vals[i + 1]) for i in range(0, len(hex_vals), 2)]
+        regions = [(hex_vals[i], hex_vals[i+1]) for i in range(0, len(hex_vals), 2)]
     else:
         regions = [
             (0x00380000, 0x003A0000),  # game_state, score area
@@ -159,9 +148,7 @@ def main():
     print("[2/7] Taking snapshot A (idle)...")
     snap_a = {}
     for start, end in regions:
-        snap_a.update(
-            snapshot_region(sock, args.host, args.port, start, end, args.chunk)
-        )
+        snap_a.update(snapshot_region(sock, args.host, args.port, start, end, args.chunk))
     print("  Read %d bytes" % len(snap_a))
 
     # Step 3: Move right
@@ -173,9 +160,7 @@ def main():
     print("[4/7] Taking snapshot B (after moving right)...")
     snap_b = {}
     for start, end in regions:
-        snap_b.update(
-            snapshot_region(sock, args.host, args.port, start, end, args.chunk)
-        )
+        snap_b.update(snapshot_region(sock, args.host, args.port, start, end, args.chunk))
     print("  Read %d bytes" % len(snap_b))
 
     # Step 5: Find 16-bit LE values where B > A (candidate X coordinates)
@@ -191,14 +176,9 @@ def main():
         if 1 <= delta <= 2000:
             candidates_ab.append((addr, val_a, val_b, delta))
 
-    print(
-        "  Round 1: %d candidates where B > A (moved right → value increased)"
-        % len(candidates_ab)
-    )
+    print("  Round 1: %d candidates where B > A (moved right → value increased)" % len(candidates_ab))
     if not candidates_ab:
-        print(
-            "  No candidates found! The player X address might not be in the scanned regions."
-        )
+        print("  No candidates found! The player X address might not be in the scanned regions.")
         print("  Try expanding the region with --regions.")
         sock.close()
         return
@@ -212,9 +192,7 @@ def main():
     print("[6/7] Taking snapshot C (after moving right again)...")
     snap_c = {}
     for start, end in regions:
-        snap_c.update(
-            snapshot_region(sock, args.host, args.port, start, end, args.chunk)
-        )
+        snap_c.update(snapshot_region(sock, args.host, args.port, start, end, args.chunk))
     print("  Read %d bytes" % len(snap_c))
 
     # Filter: C > B > A with similar delta direction
@@ -228,19 +206,14 @@ def main():
         if 1 <= delta_bc <= 2000:
             candidates_abc.append((addr, val_a, val_b, val_c, delta_ab, delta_bc))
 
-    print(
-        "  Round 2: %d candidates where C > B > A (consistent increase)"
-        % len(candidates_abc)
-    )
+    print("  Round 2: %d candidates where C > B > A (consistent increase)" % len(candidates_abc))
 
     # Step 8: Stand still, take snapshot D
     print("[7/7] Standing still for 1s, taking snapshot D...")
     time.sleep(1.0)
     snap_d = {}
     for start, end in regions:
-        snap_d.update(
-            snapshot_region(sock, args.host, args.port, start, end, args.chunk)
-        )
+        snap_d.update(snapshot_region(sock, args.host, args.port, start, end, args.chunk))
 
     # Filter: D == C (value stable when not moving)
     final_candidates = []
@@ -251,9 +224,7 @@ def main():
         delta_cd = val_d - val_c
         # Allow small drift (±2) for stability
         if abs(delta_cd) <= 2:
-            final_candidates.append(
-                (addr, val_a, val_b, val_c, val_d, delta_ab, delta_bc, delta_cd)
-            )
+            final_candidates.append((addr, val_a, val_b, val_c, val_d, delta_ab, delta_bc, delta_cd))
 
     print("\n" + "=" * 80)
     print("RESULTS: %d candidate addresses for player X" % len(final_candidates))
@@ -262,26 +233,20 @@ def main():
     if not final_candidates:
         print("No stable candidates found. Showing Round 2 results instead:")
         for addr, val_a, val_b, val_c, dab, dbc in candidates_abc[:30]:
-            print(
-                "  %06X: A=%5d B=%5d C=%5d  delta_AB=%+d delta_BC=%+d"
-                % (addr, val_a, val_b, val_c, dab, dbc)
-            )
+            print("  %06X: A=%5d B=%5d C=%5d  delta_AB=%+d delta_BC=%+d" %
+                  (addr, val_a, val_b, val_c, dab, dbc))
     else:
         # Sort by consistency of deltas (prefer similar AB and BC deltas)
         final_candidates.sort(key=lambda x: abs(x[5] - x[6]))
         for addr, va, vb, vc, vd, dab, dbc, dcd in final_candidates:
-            print(
-                "  %06X: A=%5d B=%5d C=%5d D=%5d  delta_AB=%+d delta_BC=%+d delta_CD=%+d"
-                % (addr, va, vb, vc, vd, dab, dbc, dcd)
-            )
+            print("  %06X: A=%5d B=%5d C=%5d D=%5d  delta_AB=%+d delta_BC=%+d delta_CD=%+d" %
+                  (addr, va, vb, vc, vd, dab, dbc, dcd))
 
         best = final_candidates[0]
         print("\nBest candidate: %06X" % best[0])
         print("  Use:  -e PLAYER_X_ADDR=%06X" % best[0])
-        print(
-            "  Values: %d → %d → %d → %d (deltas: %+d, %+d, %+d)"
-            % (best[1], best[2], best[3], best[4], best[5], best[6], best[7])
-        )
+        print("  Values: %d → %d → %d → %d (deltas: %+d, %+d, %+d)" %
+              (best[1], best[2], best[3], best[4], best[5], best[6], best[7]))
 
     # Restore save state
     print("\nRestoring save state...")

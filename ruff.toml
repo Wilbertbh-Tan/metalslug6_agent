@@ -1,3 +1,0 @@
-[lint.per-file-ignores]
-"scripts/*.py" = ["E402"]
-"src/env/mslug_env.py" = ["E402"]

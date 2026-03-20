@@ -6,5 +6,6 @@ opencv-python-headless>=4.8.0
 mss>=9.0.0
 numpy>=1.24.0
 pyautogui>=0.9.54
+python-xlib>=0.33
 torch>=2.0.0
 tensorboard>=2.14.0

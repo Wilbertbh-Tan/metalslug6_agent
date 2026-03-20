@@ -12,7 +12,6 @@ Reads candidate addresses every 0.5s and prints their values.
 Move the character right/left and observe which address tracks movement.
 Press Ctrl+C to stop.
 """
-
 import argparse
 import socket
 import time
@@ -47,22 +46,15 @@ def main():
     parser = argparse.ArgumentParser(description="Probe player X RAM addresses")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=55355)
-    parser.add_argument(
-        "--interval",
-        type=float,
-        default=0.5,
-        help="Seconds between reads (default: 0.5)",
-    )
+    parser.add_argument("--interval", type=float, default=0.5,
+                        help="Seconds between reads (default: 0.5)")
     args = parser.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(0.1)
 
     prev = {}
-    print(
-        "Probing RAM addresses every %.1fs. Move the character and watch for changes."
-        % args.interval
-    )
+    print("Probing RAM addresses every %.1fs. Move the character and watch for changes." % args.interval)
     print("Press Ctrl+C to stop.\n")
     header = "%-12s" % "addr"
     for addr, _, label in CANDIDATES:
