@@ -5,6 +5,7 @@ Sends a boot key sequence via xdotool (targeted at the RetroArch window),
 then polls RAM until game_state==0x00 (in-game), score==0, and lives==3.
 Saves state (F2) at that exact frame.
 """
+
 import os
 import subprocess
 import sys
@@ -52,7 +53,8 @@ def _find_retroarch_window():
     try:
         out = subprocess.check_output(
             ["xdotool", "search", "--name", "RetroArch"],
-            stderr=subprocess.DEVNULL, timeout=5,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
         )
         for line in out.decode().strip().splitlines():
             wid = line.strip()
@@ -93,8 +95,10 @@ def main():
     print(f"[savestate] RetroArch window: {wid}")
 
     region = CaptureRegion(
-        left=CAPTURE_LEFT, top=CAPTURE_TOP,
-        width=CAPTURE_WIDTH, height=CAPTURE_HEIGHT,
+        left=CAPTURE_LEFT,
+        top=CAPTURE_TOP,
+        width=CAPTURE_WIDTH,
+        height=CAPTURE_HEIGHT,
     )
     env = MetalSlugEnv(region=region, verbose=0)
 
@@ -103,7 +107,8 @@ def main():
         if wid:
             subprocess.run(
                 ["xdotool", "windowfocus", "--sync", wid],
-                stderr=subprocess.DEVNULL, timeout=5,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
             )
             time.sleep(0.5)
 
@@ -118,7 +123,9 @@ def main():
                 time.sleep(delay_after)
 
         # Poll RAM until game_state==0x00, score==0, lives==3.
-        print("[savestate] Waiting for gameplay start (RAM: game_state=0, score=0, lives>=2)...")
+        print(
+            "[savestate] Waiting for gameplay start (RAM: game_state=0, score=0, lives>=2)..."
+        )
         wait_timeout = float(os.environ.get("SAVESTATE_WAIT_TIMEOUT", "60"))
         deadline = time.monotonic() + wait_timeout
         saved = False
@@ -131,28 +138,41 @@ def main():
                 gs = env._read_ram(GAME_STATE_ADDR, 1)
                 sc = env._read_ram(SCORE_ADDR, 4)
                 lv = env._read_ram(LIVES_ADDR, 1)
-                print(f"[savestate]   ...{attempt} polls, game_state={gs}, score={sc}, lives={lv}")
+                print(
+                    f"[savestate]   ...{attempt} polls, game_state={gs}, score={sc}, lives={lv}"
+                )
             if ready:
                 # Use SAVE_STATE network command (more reliable than F2 key).
                 env._send_retroarch_cmd("SAVE_STATE")
                 time.sleep(1.0)
                 # Verify the save state file was actually created.
                 import glob
-                state_files = glob.glob("/games/Flycast/*.state") + glob.glob("/games/*.state")
+
+                state_files = glob.glob("/games/Flycast/*.state") + glob.glob(
+                    "/games/*.state"
+                )
                 found = [f for f in state_files if os.path.getsize(f) > 0]
                 if found:
-                    print(f"[savestate] Save state created: {found[0]} ({os.path.getsize(found[0])} bytes)")
+                    print(
+                        f"[savestate] Save state created: {found[0]} ({os.path.getsize(found[0])} bytes)"
+                    )
                     saved = True
                     break
                 else:
                     # Fallback: try F2 key press.
-                    print("[savestate] SAVE_STATE command didn't create file, trying F2 key...")
+                    print(
+                        "[savestate] SAVE_STATE command didn't create file, trying F2 key..."
+                    )
                     _send_key(wid, "F2")
                     time.sleep(1.0)
-                    state_files = glob.glob("/games/Flycast/*.state") + glob.glob("/games/*.state")
+                    state_files = glob.glob("/games/Flycast/*.state") + glob.glob(
+                        "/games/*.state"
+                    )
                     found = [f for f in state_files if os.path.getsize(f) > 0]
                     if found:
-                        print(f"[savestate] Save state created via F2: {found[0]} ({os.path.getsize(found[0])} bytes)")
+                        print(
+                            f"[savestate] Save state created via F2: {found[0]} ({os.path.getsize(found[0])} bytes)"
+                        )
                         saved = True
                         break
                     print("[savestate] F2 also failed, continuing to poll...")

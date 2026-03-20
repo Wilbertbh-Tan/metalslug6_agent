@@ -165,7 +165,7 @@ tensorboard --logdir outputs/runs --port 6006
 
 ### Training Stalls (No Episodes Completing)
 - **Cause**: Game stuck in transition, RetroArch crashed, or environment issue
-- **Solution**: 
+- **Solution**:
   - Check container logs: `docker logs mslug6`
   - Check if RetroArch is running
   - Restart container if needed
@@ -189,5 +189,3 @@ python scripts/train_ppo.py \
   --verbose-level 1 \
   --resume outputs/models/ppo_mslug6_10000_steps.zip
 ```
-
-

@@ -58,7 +58,9 @@ def choose_common_size(width: int, height: int, tolerance: int):
     return best
 
 
-def adjust_region(left: int, top: int, width: int, height: int, snap_multiple: int, common_tol: int):
+def adjust_region(
+    left: int, top: int, width: int, height: int, snap_multiple: int, common_tol: int
+):
     # Keep the center stable when snapping dimensions, so errors are distributed.
     cx = left + (width / 2.0)
     cy = top + (height / 2.0)
@@ -90,7 +92,12 @@ def _capture_point(label: str, method: str, countdown_s: int):
 def _sample_gray_at_abs(region: dict, abs_x: int, abs_y: int) -> int | None:
     rel_x = abs_x - int(region["left"])
     rel_y = abs_y - int(region["top"])
-    if rel_x < 0 or rel_y < 0 or rel_x >= int(region["width"]) or rel_y >= int(region["height"]):
+    if (
+        rel_x < 0
+        or rel_y < 0
+        or rel_x >= int(region["width"])
+        or rel_y >= int(region["height"])
+    ):
         return None
     with mss.mss() as sct:
         frame = np.array(sct.grab(region))
@@ -99,7 +106,9 @@ def _sample_gray_at_abs(region: dict, abs_x: int, abs_y: int) -> int | None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Calibrate game capture region from mouse points.")
+    parser = argparse.ArgumentParser(
+        description="Calibrate game capture region from mouse points."
+    )
     parser.add_argument(
         "--method",
         choices=["countdown", "enter"],
@@ -149,8 +158,12 @@ def main():
     args = parser.parse_args()
 
     if args.method == "countdown":
-        p1x, p1y = capture_point_countdown("TOP-LEFT corner of the game area", args.countdown)
-        p2x, p2y = capture_point_countdown("BOTTOM-RIGHT corner of the game area", args.countdown)
+        p1x, p1y = capture_point_countdown(
+            "TOP-LEFT corner of the game area", args.countdown
+        )
+        p2x, p2y = capture_point_countdown(
+            "BOTTOM-RIGHT corner of the game area", args.countdown
+        )
     else:
         p1x, p1y = capture_point_enter("TOP-LEFT corner of the game area")
         p2x, p2y = capture_point_enter("BOTTOM-RIGHT corner of the game area")
@@ -183,7 +196,12 @@ def main():
             snap_multiple=args.snap_multiple,
             common_tol=args.common_size_tolerance,
         )
-        adjusted = (adj_left != left) or (adj_top != top) or (adj_width != width) or (adj_height != height)
+        adjusted = (
+            (adj_left != left)
+            or (adj_top != top)
+            or (adj_width != width)
+            or (adj_height != height)
+        )
         adjust_reason = "auto_snap"
 
     adjusted_region = {
@@ -240,7 +258,12 @@ def main():
         "method": args.method,
         "top_left": {"x": adj_left, "y": adj_top},
         "bottom_right": {"x": adj_left + adj_width, "y": adj_top + adj_height},
-        "region": {"left": adj_left, "top": adj_top, "width": adj_width, "height": adj_height},
+        "region": {
+            "left": adj_left,
+            "top": adj_top,
+            "width": adj_width,
+            "height": adj_height,
+        },
         "raw_region": raw_region,
         "adjustment": {
             "applied": adjusted,
@@ -272,10 +295,14 @@ def main():
             "(auto-snapped)"
         )
     else:
-        print(f"Adjusted region: left={adj_left}, top={adj_top}, width={adj_width}, height={adj_height}")
+        print(
+            f"Adjusted region: left={adj_left}, top={adj_top}, width={adj_width}, height={adj_height}"
+        )
     print(f"Saved: {args.output}")
     print("\nUse in code:")
-    print(f"  CaptureRegion(left={adj_left}, top={adj_top}, width={adj_width}, height={adj_height})")
+    print(
+        f"  CaptureRegion(left={adj_left}, top={adj_top}, width={adj_width}, height={adj_height})"
+    )
     print("\nOr via env (for training/eval):")
     print(f"  export CAPTURE_LEFT={adj_left}")
     print(f"  export CAPTURE_TOP={adj_top}")

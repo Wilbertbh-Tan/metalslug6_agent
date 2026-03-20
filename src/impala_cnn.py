@@ -6,11 +6,17 @@ Based on the IMPALA architecture (Espeholt et al., 2018) which uses a
 
 Uses Global Average Pooling (Impoola variant) instead of flatten to be
 resolution-independent and reduce parameter count.
+
+Includes orthogonal initialization and optional random crop augmentation
+(DrAC-style) for improved generalization.
 """
+
+import math
 
 import gymnasium as gym
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 
@@ -47,7 +53,7 @@ class ConvSequence(nn.Module):
 class ImpalaCNN(BaseFeaturesExtractor):
     """IMPALA ResNet with Global Average Pooling.
 
-    Architecture: 3 ConvSequence blocks (16->32->32 channels),
+    Architecture: 3 ConvSequence blocks (32->64->64 channels),
     each with conv + maxpool + 2 residual blocks, followed by
     global average pooling and a linear projection.
 
@@ -57,8 +63,9 @@ class ImpalaCNN(BaseFeaturesExtractor):
     def __init__(
         self,
         observation_space: gym.spaces.Box,
-        features_dim: int = 256,
-        channels: tuple[int, ...] = (16, 32, 32),
+        features_dim: int = 512,
+        channels: tuple[int, ...] = (32, 64, 64),
+        augment_pad: int = 4,
     ):
         super().__init__(observation_space, features_dim)
         # SB3's CnnPolicy uses VecTransposeImage which transposes both
@@ -74,10 +81,29 @@ class ImpalaCNN(BaseFeaturesExtractor):
         self.conv_sequences = nn.Sequential(*layers)
         self.gap = nn.AdaptiveAvgPool2d(1)  # Global Average Pooling
         self.fc = nn.Linear(channels[-1], features_dim)
+        self.augment_pad = augment_pad
+
+        # Orthogonal initialization (PPO best practice for visual RL)
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.orthogonal_(m.weight, gain=math.sqrt(2))
+                nn.init.constant_(m.bias, 0.0)
+            elif isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=math.sqrt(2))
+                nn.init.constant_(m.bias, 0.0)
 
     def forward(self, observations: torch.Tensor) -> torch.Tensor:
         # observations shape: (batch, C, H, W) after SB3 preprocessing
         x = observations.float() / 255.0
+        # DrAC-style random crop augmentation (training only)
+        if self.training and self.augment_pad > 0:
+            pad = self.augment_pad
+            x = F.pad(x, [pad, pad, pad, pad], mode="replicate")
+            h = x.shape[2] - 2 * pad
+            w = x.shape[3] - 2 * pad
+            top = torch.randint(0, 2 * pad + 1, (1,)).item()
+            left = torch.randint(0, 2 * pad + 1, (1,)).item()
+            x = x[:, :, top : top + h, left : left + w]
         x = self.conv_sequences(x)
         x = nn.functional.relu(x)
         x = self.gap(x)  # (batch, C, 1, 1)

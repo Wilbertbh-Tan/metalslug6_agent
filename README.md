@@ -1,35 +1,37 @@
-# metalslug6_agent
+# Metal Slug 6 RL Agent
 
-PPO-based reinforcement learning agent for Metal Slug 6 via a custom Gymnasium environment.
+[![Secret Detection](https://github.com/Wilbertbh-Tan/metalslug6_agent/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/Wilbertbh-Tan/metalslug6_agent/actions/workflows/secret-scan.yml)
+[![Lint](https://github.com/Wilbertbh-Tan/metalslug6_agent/actions/workflows/lint.yml/badge.svg)](https://github.com/Wilbertbh-Tan/metalslug6_agent/actions/workflows/lint.yml)
+[![Docker Build](https://github.com/Wilbertbh-Tan/metalslug6_agent/actions/workflows/docker-build.yml/badge.svg)](https://github.com/Wilbertbh-Tan/metalslug6_agent/actions/workflows/docker-build.yml)
 
-## Project Structure
+> **Work in Progress** — Active development. Architecture and hyperparameters are being iterated on.
 
-- `src/env/` — Gymnasium environment, rewards, RAM decoding
-- `src/agents/` — Agent classes (RandomAgent, PPOAgent)
-- `scripts/` — Training, evaluation, and utility scripts
-- `config/` — RetroArch container configuration
-- `tests/` — Unit tests
+PPO-based reinforcement learning agent for Metal Slug 6 (Atomiswave/Flycast) using a custom Gymnasium environment. The agent learns to play from raw pixels and RAM-based rewards inside a headless Docker container running RetroArch.
 
-## Quick Start
+## Current Results
 
-### Test environment (random agent, max verbosity)
-```bash
-python scripts/random_agent.py --max-episodes 2 --verbose-level 2 --disable-in-game-checks
-```
+| Run | Architecture | Max Score | Avg Score | Steps | Notes |
+|-----|-------------|-----------|-----------|-------|-------|
+| PPO_16 | ImpalaCNN 16-32-32 | 196,360 | 47,784 | ~5.8M | Best so far |
+| PPO_22 | ImpalaCNN 16-32-32 | 150,080 | 45,000 | ~5.5M | Curriculum death penalties |
+| PPO_25 | ImpalaCNN 32-64-64 + DrAC | In progress | — | — | New architecture, fresh start |
 
-### Train
-```bash
-python scripts/train_ppo.py --timesteps 100000
-```
+## Architecture
 
-### Evaluate
-```bash
-python scripts/eval_ppo.py --model outputs/models/ppo_mslug6_final.zip --episodes 3
-```
+- **Policy**: SB3 PPO with ImpalaCNN (IMPALA ResNet + Global Average Pooling)
+- **CNN**: 3 ConvSequence blocks (32→64→64), orthogonal init, DrAC random crop augmentation
+- **Observations**: 160x120 grayscale, 4-frame stack
+- **Action space**: MultiDiscrete([5, 3, 3]) — movement, attack, modifier
+- **Reward shaping**: Score delta, progress, survival bonus, curriculum death penalties (9 levels)
+- **Exploration**: Entropy bonus, sticky actions (25%), episodic scroll novelty bonus
+- **Plasticity**: Weight decay (1e-4), periodic policy head reset every 500k steps
 
-## Container
+## Setup
 
-See `CONTAINER.md` for full Docker details (env vars, GPU setup, debugging).
+### Requirements
+
+- Docker with NVIDIA Container Toolkit (for GPU training)
+- A Metal Slug 6 ROM (Atomiswave format, not included)
 
 ### Build
 
@@ -40,105 +42,67 @@ docker build -t metalslug-rl .
 ### Train
 
 ```bash
-docker run --gpus all --rm -it \
-  -p 5900:5900 -p 6080:6080 \
-  -e RETROARCH_CORE="/usr/lib/libretro/flycast_libretro.so" \
-  -e RETROARCH_CONTENT="/games/mslug6.zip" \
-  -e RUN_UNTIL_INTERRUPT=1 \
+docker run --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all \
+  --rm -d -p 5900:5900 -p 6080:6080 \
   -v /path/to/your/games:/games \
   -v $(pwd)/outputs:/app/outputs \
-  --name mslug6 \
-  metalslug-rl
+  -e RETROARCH_CORE=flycast_libretro \
+  -e RETROARCH_CONTENT=/games/mslug6.zip \
+  -e TIMESTEPS=100000000 -e DEVICE=cuda \
+  --name mslug6 metalslug-rl
 ```
 
-Drop `--gpus all` on machines without an NVIDIA GPU (training falls back to CPU).
+View in browser: http://localhost:6080/vnc.html
 
-The emulator runs uncapped by default — no fast-forward flag needed.
+### Monitor
 
-Training parameters are set via `-e` env vars:
+```bash
+# Follow training logs
+docker logs -f mslug6
+
+# Or read the training stdout log directly
+tail -f outputs/runs/PPO_*/logs/training_stdout.log
+```
+
+## Key Training Parameters
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TIMESTEPS` | `100000` | Total training timesteps |
-| `RUN_UNTIL_INTERRUPT` | (empty) | If set, train indefinitely until Ctrl+C |
-| `CHUNK` | `50000` | Steps per chunk when using `RUN_UNTIL_INTERRUPT` |
-| `CHECKPOINT_EVERY` | `10000` | Save a checkpoint every N steps |
-| `LEARNING_RATE` | `3e-4` | PPO learning rate |
-| `ENT_COEF` | `0.05` | Entropy coefficient (exploration) |
-| `N_STEPS` | `512` | Rollout steps per PPO update |
-| `BATCH_SIZE` | `64` | Mini-batch size |
-| `N_EPOCHS` | `4` | PPO epochs per update |
-| `GAMMA` | `0.99` | Discount factor |
-| `SCORE_SCALE` | `0.005` | Score reward scaling |
-| `DEATH_PENALTY` | `-5.0` | Penalty on death |
-| `TIME_PENALTY` | `-0.005` | Per-step time penalty |
-| `FRAME_SKIP` | `4` | Frames to skip per action |
+| `TIMESTEPS` | `100000000` | Total training timesteps |
 | `DEVICE` | `auto` | `auto`, `cuda`, or `cpu` |
+| `CHECKPOINT_EVERY` | `50000` | Save checkpoint every N steps |
+| `N_STEPS` | `2048` | Rollout steps per PPO update |
+| `BATCH_SIZE` | `256` | Mini-batch size |
+| `LEARNING_RATE` | `5e-5` | Learning rate (linear schedule) |
+| `ENT_COEF` | `0.02` | Entropy coefficient |
+| `CLIP_RANGE` | `0.1` | PPO clip range (linear schedule) |
+| `CLIP_RANGE_VF` | `-1` | Value function clipping (-1 = disabled) |
+| `WEIGHT_DECAY` | `1e-4` | Adam weight decay |
+| `FRAME_SKIP` | `3` | Frames to skip per action |
 | `RESUME` | (empty) | Path to checkpoint to resume from |
+| `NUM_ENVS` | `1` | Parallel environments (max 2 for Flycast) |
 
-Example with custom params:
+See `CONTAINER.md` for the full environment variable reference.
 
-```bash
-docker run --gpus all --rm -it \
-  -p 5900:5900 -p 6080:6080 \
-  -e RETROARCH_CORE="/usr/lib/libretro/flycast_libretro.so" \
-  -e RETROARCH_CONTENT="/games/mslug6.zip" \
-  -e RUN_UNTIL_INTERRUPT=1 \
-  -e LEARNING_RATE=1e-4 \
-  -e ENT_COEF=0.01 \
-  -e N_STEPS=1024 \
-  -e BATCH_SIZE=128 \
-  -v /path/to/your/games:/games \
-  -v $(pwd)/outputs:/app/outputs \
-  --name mslug6 \
-  metalslug-rl
+## Project Structure
+
+```
+src/
+  env/mslug_env.py      # Gymnasium environment (screen capture, RAM reads, rewards)
+  env/rewards.py         # Reward computation
+  env/ram_decode.py      # BCD score decoding
+  impala_cnn.py          # IMPALA ResNet feature extractor
+  agents/                # PPO and random agent wrappers
+scripts/
+  train_ppo.py           # Main training script with callbacks and crash recovery
+  run_virtual_desktop.sh # Container entrypoint (Xvfb, RetroArch, auto-boot)
+  eval_ppo.py            # Model evaluation
+config/
+  retroarch-container.cfg # Headless RetroArch config
 ```
 
-### Running eval inside the container
+## What This Repo Does NOT Include
 
-```bash
-# Inside container — 2 episodes, full step detail
-docker exec mslug6 python3 scripts/eval_ppo.py --random --episodes 2 --verbose-level 2 --no-calibration --disable-in-game-checks
-
-# Run indefinitely until Ctrl+C
-docker exec -it mslug6 python3 scripts/eval_ppo.py --random --episodes 0 --verbose-level 2 --no-calibration --disable-in-game-checks
-
-# Episode summaries only (no per-step spam)
-docker exec mslug6 python3 scripts/eval_ppo.py --random --episodes 0 --verbose-level 1 --no-calibration --disable-in-game-checks
-```
-
-Note: the 5-second countdown + "Click on RetroArch" message shows because `MSLUG_HEADLESS` isn't set in the exec shell. That's harmless — it's just a delay. If you want to skip it, add `-e MSLUG_HEADLESS=1`:
-
-```bash
-docker exec -e MSLUG_HEADLESS=1 mslug6 python3 scripts/eval_ppo.py --random --episodes 0 --verbose-level 2 --no-calibration --disable-in-game-checks
-```
-
-### Viewing Container Logs
-
-```bash
-# View all logs
-docker logs mslug6
-
-# Follow logs in real-time
-docker logs -f mslug6
-
-# View last 50 lines
-docker logs --tail 50 mslug6
-
-# Filter for auto-boot messages
-docker logs mslug6 2>&1 | grep -i "auto-boot\|sent:\|gameplay\|save state"
-
-# Filter for key sequence
-docker logs mslug6 2>&1 | grep -E "sent:|key sequence|BOOT_KEYS"
-
-# View debug logs (instrumentation)
-
-# Check container status
-docker ps -a --filter name=mslug6
-```
-
-## What this repo does NOT include
-
-- Game content files
-- Emulator cores
-- Saved game-state files
+- Game ROM files
+- Emulator cores (built in Docker image)
+- Saved game states (created at runtime)

@@ -4,6 +4,7 @@
 Runs random actions in the environment, logs rewards and episode summaries.
 Useful for validating death detection, reward signals, and env stability.
 """
+
 import argparse
 import os
 import sys
@@ -20,8 +21,16 @@ from src.env.window_detect import detect_retroarch_window
 
 
 ACTION_NAMES = {
-    0: "noop", 1: "left", 2: "right", 3: "up", 4: "down",
-    5: "shoot", 6: "jump", 7: "grenade", 8: "slug_attack", 9: "weapon_change",
+    0: "noop",
+    1: "left",
+    2: "right",
+    3: "up",
+    4: "down",
+    5: "shoot",
+    6: "jump",
+    7: "grenade",
+    8: "slug_attack",
+    9: "weapon_change",
 }
 
 
@@ -52,9 +61,11 @@ def make_env(args) -> MetalSlugEnv:
         width=region_values["width"],
         height=region_values["height"],
     )
-    print(f"Capture region: {region_values['left']},{region_values['top']} "
-          f"{region_values['width']}x{region_values['height']} "
-          f"(source={region_values.get('source', 'default')})")
+    print(
+        f"Capture region: {region_values['left']},{region_values['top']} "
+        f"{region_values['width']}x{region_values['height']} "
+        f"(source={region_values.get('source', 'default')})"
+    )
 
     in_game_checks = load_in_game_checks(
         calibration_json_path=args.calibration_json,
@@ -73,24 +84,41 @@ def make_env(args) -> MetalSlugEnv:
 
 def main():
     parser = argparse.ArgumentParser(description="Random agent for Metal Slug 6")
-    parser.add_argument("--max-steps", type=int, default=0,
-                        help="Stop after N steps (0 = unlimited)")
-    parser.add_argument("--max-episodes", type=int, default=0,
-                        help="Stop after N episodes (0 = unlimited)")
-    parser.add_argument("--sleep", type=float, default=0.02,
-                        help="Sleep between steps (seconds)")
-    parser.add_argument("--verbose-level", type=int, default=1,
-                        help="Env verbosity (0=quiet, 1=steps, 2=debug)")
-    parser.add_argument("--disable-in-game-checks", action="store_true",
-                        help="Bypass in-game pixel gate")
-    parser.add_argument("--no-auto-detect", action="store_true",
-                        help="Disable xdotool window auto-detection")
+    parser.add_argument(
+        "--max-steps", type=int, default=0, help="Stop after N steps (0 = unlimited)"
+    )
+    parser.add_argument(
+        "--max-episodes",
+        type=int,
+        default=0,
+        help="Stop after N episodes (0 = unlimited)",
+    )
+    parser.add_argument(
+        "--sleep", type=float, default=0.02, help="Sleep between steps (seconds)"
+    )
+    parser.add_argument(
+        "--verbose-level",
+        type=int,
+        default=1,
+        help="Env verbosity (0=quiet, 1=steps, 2=debug)",
+    )
+    parser.add_argument(
+        "--disable-in-game-checks",
+        action="store_true",
+        help="Bypass in-game pixel gate",
+    )
+    parser.add_argument(
+        "--no-auto-detect",
+        action="store_true",
+        help="Disable xdotool window auto-detection",
+    )
     parser.add_argument("--capture-left", type=int, default=None)
     parser.add_argument("--capture-top", type=int, default=None)
     parser.add_argument("--capture-width", type=int, default=None)
     parser.add_argument("--capture-height", type=int, default=None)
-    parser.add_argument("--calibration-json", type=str,
-                        default="outputs/calibration/region.json")
+    parser.add_argument(
+        "--calibration-json", type=str, default="outputs/calibration/region.json"
+    )
     parser.add_argument("--no-calibration", action="store_true")
     args = parser.parse_args()
 
@@ -131,11 +159,13 @@ def main():
                 episode += 1
                 ep_elapsed = time.monotonic() - ep_start
                 reason = info.get("terminate_reason", "unknown")
-                print(f"\n{'='*50}")
+                print(f"\n{'=' * 50}")
                 print(f"Episode {episode} ended: reason={reason}")
-                print(f"  steps={ep_steps}  score={score}  "
-                      f"reward={ep_reward:+.4f}  time={ep_elapsed:.1f}s")
-                print(f"{'='*50}\n")
+                print(
+                    f"  steps={ep_steps}  score={score}  "
+                    f"reward={ep_reward:+.4f}  time={ep_elapsed:.1f}s"
+                )
+                print(f"{'=' * 50}\n")
 
                 if args.max_episodes > 0 and episode >= args.max_episodes:
                     print(f"Reached max_episodes={args.max_episodes}. Done.")

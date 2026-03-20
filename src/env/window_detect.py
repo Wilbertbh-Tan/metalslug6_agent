@@ -12,7 +12,11 @@ def _get_screen_size(env: dict) -> tuple[int, int]:
     """Get the Xvfb screen dimensions via xdpyinfo or fallback to 1280x720."""
     try:
         out = subprocess.check_output(
-            ["xdpyinfo"], env=env, timeout=5, text=True, stderr=subprocess.DEVNULL,
+            ["xdpyinfo"],
+            env=env,
+            timeout=5,
+            text=True,
+            stderr=subprocess.DEVNULL,
         )
         for line in out.splitlines():
             if "dimensions:" in line:
@@ -20,13 +24,21 @@ def _get_screen_size(env: dict) -> tuple[int, int]:
                 dim = line.split("dimensions:")[1].strip().split()[0]
                 w, h = dim.split("x")
                 return int(w), int(h)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
         pass
     return 1280, 720
 
 
 def _crop_black_borders(
-    left: int, top: int, width: int, height: int, threshold: float = 10.0,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+    threshold: float = 10.0,
 ) -> tuple[int, int, int, int]:
     """Grab the window region and trim black border rows/columns.
 

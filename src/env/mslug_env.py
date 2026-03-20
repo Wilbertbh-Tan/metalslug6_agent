@@ -7,6 +7,7 @@ can be combined simultaneously (e.g. right+shoot+jump).
 Game over detection: RAM-based via game_mode at 003868DA.
 game_mode=1 means alive, game_mode!=1 means dead/menu.
 """
+
 import json
 import os
 import signal
@@ -36,9 +37,20 @@ class XlibKeyboard:
 
     # Keys used by the game environment
     _KEY_NAMES = [
-        "left", "right", "up", "down",
-        "z", "x", "a", "s", "w",
-        "f2", "f4", "tab", "Shift_R", "Return",
+        "left",
+        "right",
+        "up",
+        "down",
+        "z",
+        "x",
+        "a",
+        "s",
+        "w",
+        "f2",
+        "f4",
+        "tab",
+        "Shift_R",
+        "Return",
     ]
 
     def __init__(self):
@@ -48,6 +60,7 @@ class XlibKeyboard:
         try:
             from Xlib import X, display as xdisplay
             from Xlib.ext import xtest
+
             self._X = X
             self._xtest = xtest
             d = xdisplay.Display()
@@ -68,11 +81,18 @@ class XlibKeyboard:
     def _name_to_keysym(name: str):
         """Convert a key name to an X11 keysym."""
         from Xlib import XK
+
         # Map pyautogui-style names to Xlib keysym names
         mapping = {
-            "left": "Left", "right": "Right", "up": "Up", "down": "Down",
-            "tab": "Tab", "return": "Return", "shift_r": "Shift_R",
-            "f2": "F2", "f4": "F4",
+            "left": "Left",
+            "right": "Right",
+            "up": "Up",
+            "down": "Down",
+            "tab": "Tab",
+            "return": "Return",
+            "shift_r": "Shift_R",
+            "f2": "F2",
+            "f4": "F4",
         }
         xlib_name = mapping.get(name.lower(), name)
         # Try XK_<name> lookup
@@ -117,7 +137,9 @@ def _kill_stale_agents():
         try:
             result = subprocess.run(
                 ["pgrep", "-f", pat],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             for line in result.stdout.strip().split("\n"):
                 pid = line.strip()
@@ -133,7 +155,9 @@ def _kill_stale_agents():
     try:
         result = subprocess.run(
             ["pgrep", "-f", "READ_CORE_RAM"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         for line in result.stdout.strip().split("\n"):
             pid = line.strip()
@@ -161,10 +185,21 @@ class CaptureRegion:
 
 class MetalSlugEnv(gym.Env):
     REWARD_KEYS = (
-        "score_reward", "progress_right", "progress_left", "time_penalty",
-        "x_progress", "hp_loss", "game_over",
-        "grenade_pickup", "grenade_waste", "ammo_pickup", "ammo_waste",
-        "score_stall", "jump_bonus", "survival_bonus",
+        "score_reward",
+        "progress_right",
+        "progress_left",
+        "time_penalty",
+        "x_progress",
+        "hp_loss",
+        "game_over",
+        "grenade_pickup",
+        "grenade_waste",
+        "ammo_pickup",
+        "ammo_waste",
+        "score_stall",
+        "jump_bonus",
+        "survival_bonus",
+        "scroll_novelty",
     )
 
     def __init__(
@@ -215,6 +250,8 @@ class MetalSlugEnv(gym.Env):
         survival_bonus: float = 0.01,
         stuck_threshold_steps: int = 10,
         progress_scale_x: float = 0.01,
+        scroll_novelty_bonus: float = 0.005,
+        scroll_novelty_bucket: int = 10,
         max_episode_steps: int = 3000,
         verbose: bool | int = False,
     ):
@@ -240,9 +277,17 @@ class MetalSlugEnv(gym.Env):
         # - on_reset_once: send on first reset only (legacy-compatible alias)
         # - on_reset_every: send every reset
         mode = str(fast_forward_mode or "off").strip().lower()
-        valid_modes = {"off", "set_once", "set_once_persist", "on_reset_once", "on_reset_every"}
+        valid_modes = {
+            "off",
+            "set_once",
+            "set_once_persist",
+            "on_reset_once",
+            "on_reset_every",
+        }
         if mode not in valid_modes:
-            raise ValueError(f"Invalid fast_forward_mode={fast_forward_mode!r}. Expected one of {sorted(valid_modes)}")
+            raise ValueError(
+                f"Invalid fast_forward_mode={fast_forward_mode!r}. Expected one of {sorted(valid_modes)}"
+            )
         # Backward compatibility with legacy flags.
         if mode == "off":
             if fast_forward_on_reset:
@@ -276,13 +321,16 @@ class MetalSlugEnv(gym.Env):
         self._lives_block_addr = "003D3B07"
         self._lives_block_size = 1091
         self._use_individual_reads = False  # fallback if block read fails
+        self._individual_read_count = 0  # retry block reads after N individual reads
         self.progress_scale = progress_scale
         self.score_scale = score_scale
         self.score_clip = score_clip
         self.time_penalty = time_penalty
         # HP loss penalties: keyed by HP value BEFORE the drop
         # e.g. {2: -1.0} means -1.0 when HP drops from 2 to 1
-        self._hp_loss_penalties = hp_loss_penalties if hp_loss_penalties is not None else {2: -5.0, 1: -5.0}
+        self._hp_loss_penalties = (
+            hp_loss_penalties if hp_loss_penalties is not None else {2: -5.0, 1: -5.0}
+        )
         self._game_over_penalty = game_over_penalty
         # Resource management rewards
         self._grenade_pickup_reward = grenade_pickup_reward
@@ -296,6 +344,9 @@ class MetalSlugEnv(gym.Env):
         self._survival_bonus = survival_bonus
         self._stuck_threshold_steps = max(1, int(stuck_threshold_steps))
         self._progress_scale_x = progress_scale_x
+        self._scroll_novelty_bonus = scroll_novelty_bonus
+        self._scroll_novelty_bucket = max(1, int(scroll_novelty_bucket))
+        self._visited_scroll_positions: set[int] = set()
         self._max_episode_steps = max(0, int(max_episode_steps))
         self._score_stall_steps = 0
         self._stuck_steps = 0  # consecutive steps pressing right with no X increase
@@ -338,11 +389,13 @@ class MetalSlugEnv(gym.Env):
         obs_w = int(os.environ.get("OBS_WIDTH", "160"))
         obs_h = int(os.environ.get("OBS_HEIGHT", "120"))
         self._obs_size = (obs_w, obs_h)  # (width, height) for cv2.resize
-        self.observation_space = gym.spaces.Box(0, 255, shape=(obs_h, obs_w, 1), dtype=np.uint8)
+        self.observation_space = gym.spaces.Box(
+            0, 255, shape=(obs_h, obs_w, 1), dtype=np.uint8
+        )
         # Set DISPLAY before creating mss/Xlib handles so each SubprocVecEnv
         # worker captures from its own Xvfb instance.
         if display is not None:
-            os.environ['DISPLAY'] = display
+            os.environ["DISPLAY"] = display
         self.sct = mss.mss()
         pyautogui.FAILSAFE = True
         self._kb = XlibKeyboard()
@@ -382,7 +435,9 @@ class MetalSlugEnv(gym.Env):
         return True
 
     def _is_in_game(self, gray_frame):
-        return bool(self.in_game_checks) and self._matches_pixel_checks(gray_frame, self.in_game_checks)
+        return bool(self.in_game_checks) and self._matches_pixel_checks(
+            gray_frame, self.in_game_checks
+        )
 
     def _read_status_block(self) -> tuple[int | None, int | None]:
         """Read game_state and game_mode from RAM.
@@ -394,7 +449,9 @@ class MetalSlugEnv(gym.Env):
         for _ in range(self.ram_read_retries):
             try:
                 cmd = "READ_CORE_RAM 003868D0 11\n"
-                self._status_sock.sendto(cmd.encode(), (self.retroarch_host, self.retroarch_cmd_port))
+                self._status_sock.sendto(
+                    cmd.encode(), (self.retroarch_host, self.retroarch_cmd_port)
+                )
                 data, _ = self._status_sock.recvfrom(1024)
                 parts = data.decode().strip().split()
                 values = [int(b, 16) for b in parts[2:]]
@@ -416,7 +473,9 @@ class MetalSlugEnv(gym.Env):
         for _ in range(self.ram_read_retries):
             try:
                 cmd = "READ_CORE_RAM 003868D0 241\n"
-                self._status_sock.sendto(cmd.encode(), (self.retroarch_host, self.retroarch_cmd_port))
+                self._status_sock.sendto(
+                    cmd.encode(), (self.retroarch_host, self.retroarch_cmd_port)
+                )
                 data, _ = self._status_sock.recvfrom(2048)
                 parts = data.decode().strip().split()
                 values = [int(b, 16) for b in parts[2:]]
@@ -445,7 +504,10 @@ class MetalSlugEnv(gym.Env):
         death detection, to avoid false positives.
         """
         gs, game_mode = self._read_status_block()
-        self._log(2, f"[death_check] gs={gs} game_mode={game_mode} seen_alive={self._seen_alive}")
+        self._log(
+            2,
+            f"[death_check] gs={gs} game_mode={game_mode} seen_alive={self._seen_alive}",
+        )
         if game_mode is None:
             return False
         if not self._seen_alive:
@@ -461,7 +523,10 @@ class MetalSlugEnv(gym.Env):
         to avoid two separate UDP round-trips.
         """
         gs, game_mode, score = self._read_status_and_score()
-        self._log(2, f"[death_check] gs={gs} game_mode={game_mode} seen_alive={self._seen_alive}")
+        self._log(
+            2,
+            f"[death_check] gs={gs} game_mode={game_mode} seen_alive={self._seen_alive}",
+        )
         if game_mode is None:
             return False, score
         if not self._seen_alive:
@@ -476,7 +541,9 @@ class MetalSlugEnv(gym.Env):
         for _ in range(self.ram_read_retries):
             try:
                 cmd = f"READ_CORE_RAM {address} {num_bytes}\n"
-                self._ram_sock.sendto(cmd.encode(), (self.retroarch_host, self.retroarch_cmd_port))
+                self._ram_sock.sendto(
+                    cmd.encode(), (self.retroarch_host, self.retroarch_cmd_port)
+                )
                 data, _ = self._ram_sock.recvfrom(recv_buf)
                 parts = data.decode().strip().split()
                 values = [int(b, 16) for b in parts[2:]]
@@ -488,7 +555,9 @@ class MetalSlugEnv(gym.Env):
 
     def _send_retroarch_cmd(self, command: str):
         cmd = command.strip().upper() + "\n"
-        self._cmd_sock.sendto(cmd.encode(), (self.retroarch_host, self.retroarch_cmd_port))
+        self._cmd_sock.sendto(
+            cmd.encode(), (self.retroarch_host, self.retroarch_cmd_port)
+        )
 
     def _read_score(self):
         b = self._read_ram(self._score_addr, 5)
@@ -507,14 +576,25 @@ class MetalSlugEnv(gym.Env):
         Returns (lives, bombs, arms) or (None, None, None) on failure.
         """
         if self._use_individual_reads:
-            return self._read_lives_individual()
+            self._individual_read_count += 1
+            if self._individual_read_count >= 50:
+                # Periodically retry block reads in case the issue was transient
+                self._use_individual_reads = False
+                self._individual_read_count = 0
+                self._log(2, "[ram] Retrying block read after 50 individual reads")
+            else:
+                return self._read_lives_individual()
         values = self._read_ram(self._lives_block_addr, self._lives_block_size)
         if not values or len(values) != self._lives_block_size:
             if values and len(values) != self._lives_block_size:
                 # Block read returned wrong size — switch to individual reads
-                self._log(1, "[ram] Lives block read returned %d bytes (expected %d), switching to individual reads"
-                          % (len(values), self._lives_block_size))
-                self._use_individual_reads = True
+                self._log(
+                    1,
+                    "[ram] Lives block read returned %d bytes (expected %d), switching to individual reads"
+                    % (len(values), self._lives_block_size),
+                )
+            self._use_individual_reads = True
+            self._individual_read_count = 0
             return self._read_lives_individual()
         lives = values[0]
         bombs = values[1086]
@@ -528,7 +608,11 @@ class MetalSlugEnv(gym.Env):
         bomb_raw = self._read_ram(self._bomb_addr, 1)
         bombs = bomb_raw[0] if bomb_raw else None
         arms_raw = self._read_ram(self._arms_addr, 2)
-        arms = (arms_raw[0] | (arms_raw[1] << 8)) if arms_raw and len(arms_raw) == 2 else None
+        arms = (
+            (arms_raw[0] | (arms_raw[1] << 8))
+            if arms_raw and len(arms_raw) == 2
+            else None
+        )
         return lives, bombs, arms
 
     def _read_time(self) -> int | None:
@@ -538,7 +622,9 @@ class MetalSlugEnv(gym.Env):
             return values[0]
         return None
 
-    def _read_extended_state(self) -> tuple[int | None, int | None, int | None, int | None]:
+    def _read_extended_state(
+        self,
+    ) -> tuple[int | None, int | None, int | None, int | None]:
         """Read lives, bombs, and arms. Returns (lives, bombs, arms, time).
 
         game_time is only used in the info dict, not for rewards — skip the
@@ -576,8 +662,11 @@ class MetalSlugEnv(gym.Env):
             self._prev_lives = 0
 
         total = penalty + missed_hp
-        self._log(1, "[death] GAME OVER penalty=%.1f missed_hp=%.1f total=%.1f deaths=%d"
-                  % (penalty, missed_hp, total, self._deaths_this_episode))
+        self._log(
+            1,
+            "[death] GAME OVER penalty=%.1f missed_hp=%.1f total=%.1f deaths=%d"
+            % (penalty, missed_hp, total, self._deaths_this_episode),
+        )
         return total
 
     def _read_player_x(self) -> int | None:
@@ -595,6 +684,7 @@ class MetalSlugEnv(gym.Env):
             if not b or len(b) < 4:
                 return None
             import struct
+
             val = struct.unpack("<f", bytes(b))[0]
             if val != val:  # NaN check
                 return None
@@ -618,9 +708,15 @@ class MetalSlugEnv(gym.Env):
             return
         if self.fast_forward_mode == "set_once_persist":
             if self._is_fast_forward_marked_enabled():
-                self._log(1, f"[reset] Fast-forward already marked enabled, skipping key ({self.fast_forward_key})")
+                self._log(
+                    1,
+                    f"[reset] Fast-forward already marked enabled, skipping key ({self.fast_forward_key})",
+                )
                 return
-        if self.fast_forward_mode in ("set_once", "on_reset_once") and not self._fast_forward_armed:
+        if (
+            self.fast_forward_mode in ("set_once", "on_reset_once")
+            and not self._fast_forward_armed
+        ):
             return
         self._tap_key(self.fast_forward_key)
         if self.fast_forward_mode in ("set_once", "on_reset_once", "set_once_persist"):
@@ -634,11 +730,16 @@ class MetalSlugEnv(gym.Env):
 
     def _is_fast_forward_marked_enabled(self) -> bool:
         try:
-            if not self.fast_forward_state_file or not os.path.exists(self.fast_forward_state_file):
+            if not self.fast_forward_state_file or not os.path.exists(
+                self.fast_forward_state_file
+            ):
                 return False
             with open(self.fast_forward_state_file, "r", encoding="utf-8") as f:
                 payload = json.load(f)
-            return bool(payload.get("enabled")) and payload.get("key") == self.fast_forward_key
+            return (
+                bool(payload.get("enabled"))
+                and payload.get("key") == self.fast_forward_key
+            )
         except Exception:
             return False
 
@@ -705,9 +806,16 @@ class MetalSlugEnv(gym.Env):
 
     def _release_all_keys(self):
         """Release all game-relevant keys to prevent sticky keys."""
-        for k in ["left", "right", "up", "down",
-                   self.shoot_key, self.grenade_key,
-                   self.jump_key, self.metal_slug_attack_key]:
+        for k in [
+            "left",
+            "right",
+            "up",
+            "down",
+            self.shoot_key,
+            self.grenade_key,
+            self.jump_key,
+            self.metal_slug_attack_key,
+        ]:
             self._kb.key_up(k)
         self._kb.flush()
 
@@ -760,24 +868,36 @@ class MetalSlugEnv(gym.Env):
         # Safety: if we've never seen game_mode==1 and taken 50+ steps,
         # the game is stuck at menu/loading. Force terminate so reset() retries.
         if not self._seen_alive and self._step_count >= 50:
-            self._log(1, f"[step {self._step_count}] Never saw game_mode==1, force terminating (stuck at menu)")
+            self._log(
+                1,
+                f"[step {self._step_count}] Never saw game_mode==1, force terminating (stuck at menu)",
+            )
             raw = self._grab_raw()
             obs = self._preprocess(raw)
             self._last_end_reason = "never_alive"
             penalty = self._game_over_penalty
             self._episode_reward += penalty
             self._track("game_over", penalty)
-            return obs, penalty, True, False, {
-                "phase": "game_over",
-                "terminate_reason": "never_alive",
-                "score": 0,
-                "episode_reward": self._episode_reward,
-                "episode_steps": self._step_count,
-                "deaths_this_episode": 0,
-                "lives": None, "bombs": None, "arms": None, "game_time": None,
-                "reward_breakdown": dict(self._reward_breakdown),
-                "max_player_x": self._max_player_x,
-            }
+            return (
+                obs,
+                penalty,
+                True,
+                False,
+                {
+                    "phase": "game_over",
+                    "terminate_reason": "never_alive",
+                    "score": 0,
+                    "episode_reward": self._episode_reward,
+                    "episode_steps": self._step_count,
+                    "deaths_this_episode": 0,
+                    "lives": None,
+                    "bombs": None,
+                    "arms": None,
+                    "game_time": None,
+                    "reward_breakdown": dict(self._reward_breakdown),
+                    "max_player_x": self._max_player_x,
+                },
+            )
 
         # Frame skip: repeat the action multiple times, checking for death
         # via RAM each iteration but only capturing the screen on the last
@@ -788,7 +908,7 @@ class MetalSlugEnv(gym.Env):
         # game_state + game_mode + score into a single UDP request, saving
         # one round-trip per step.
         for skip_i in range(self.frame_skip):
-            last_frame = (skip_i == self.frame_skip - 1)
+            last_frame = skip_i == self.frame_skip - 1
 
             if not last_frame:
                 # Intermediate frame: just execute the action, no UDP reads.
@@ -806,54 +926,97 @@ class MetalSlugEnv(gym.Env):
                 self._episode_reward += penalty
                 self._track("game_over", self._game_over_penalty)
                 self._last_end_reason = "ram_death"
-                self._log(1, f"[step {self._step_count}] GAME OVER (game_mode!=1), penalty={penalty}")
-                return obs, penalty, True, False, {
-                    "phase": "game_over",
-                    "terminate_reason": "ram_death",
-                    "score": curr_score,
-                    "score_addr": self._score_addr,
-                    "episode_reward": self._episode_reward,
-                    "episode_steps": self._step_count,
-                    "deaths_this_episode": self._deaths_this_episode,
-                    "lives": None, "bombs": None, "arms": None, "game_time": None,
-                    "reward_breakdown": dict(self._reward_breakdown),
-                    "max_player_x": self._max_player_x,
-                }
+                self._log(
+                    1,
+                    f"[step {self._step_count}] GAME OVER (game_mode!=1), penalty={penalty}",
+                )
+                return (
+                    obs,
+                    penalty,
+                    True,
+                    False,
+                    {
+                        "phase": "game_over",
+                        "terminate_reason": "ram_death",
+                        "score": curr_score,
+                        "score_addr": self._score_addr,
+                        "episode_reward": self._episode_reward,
+                        "episode_steps": self._step_count,
+                        "deaths_this_episode": self._deaths_this_episode,
+                        "lives": None,
+                        "bombs": None,
+                        "arms": None,
+                        "game_time": None,
+                        "reward_breakdown": dict(self._reward_breakdown),
+                        "max_player_x": self._max_player_x,
+                    },
+                )
 
             self._execute_action(action)
 
             # Last frame: grab screen for observation and in-game checks
             raw = self._grab_raw()
 
-            if self.enforce_in_game_checks and self.in_game_checks and not self._is_in_game(raw):
+            if (
+                self.enforce_in_game_checks
+                and self.in_game_checks
+                and not self._is_in_game(raw)
+            ):
                 self._consecutive_transition += 1
                 obs = self._preprocess(raw)
-                self._log(1, f"[step {self._step_count}] TRANSITION [{self._consecutive_transition}/{self.max_transition_steps}]")
-                if self.max_transition_steps > 0 and self._consecutive_transition >= self.max_transition_steps:
+                self._log(
+                    1,
+                    f"[step {self._step_count}] TRANSITION [{self._consecutive_transition}/{self.max_transition_steps}]",
+                )
+                if (
+                    self.max_transition_steps > 0
+                    and self._consecutive_transition >= self.max_transition_steps
+                ):
                     self._last_end_reason = "transition_timeout"
                     penalty = self._game_over_penalty
                     self._episode_reward += penalty
                     self._track("game_over", penalty)
-                    self._log(1, f"[step {self._step_count}] TRANSITION TIMEOUT — treating as death")
-                    return obs, penalty, True, False, {
-                        "phase": "game_over",
-                        "terminate_reason": "transition_timeout",
+                    self._log(
+                        1,
+                        f"[step {self._step_count}] TRANSITION TIMEOUT — treating as death",
+                    )
+                    return (
+                        obs,
+                        penalty,
+                        True,
+                        False,
+                        {
+                            "phase": "game_over",
+                            "terminate_reason": "transition_timeout",
+                            "score": curr_score,
+                            "score_addr": self._score_addr,
+                            "episode_reward": self._episode_reward,
+                            "episode_steps": self._step_count,
+                            "deaths_this_episode": self._deaths_this_episode,
+                            "lives": None,
+                            "bombs": None,
+                            "arms": None,
+                            "game_time": None,
+                            "reward_breakdown": dict(self._reward_breakdown),
+                            "max_player_x": self._max_player_x,
+                        },
+                    )
+                return (
+                    obs,
+                    0.0,
+                    False,
+                    False,
+                    {
+                        "phase": "transition",
                         "score": curr_score,
                         "score_addr": self._score_addr,
-                        "episode_reward": self._episode_reward,
-                        "episode_steps": self._step_count,
                         "deaths_this_episode": self._deaths_this_episode,
-                        "lives": None, "bombs": None, "arms": None, "game_time": None,
-                        "reward_breakdown": dict(self._reward_breakdown),
-                        "max_player_x": self._max_player_x,
-                    }
-                return obs, 0.0, False, False, {
-                    "phase": "transition",
-                    "score": curr_score,
-                    "score_addr": self._score_addr,
-                    "deaths_this_episode": self._deaths_this_episode,
-                    "lives": None, "bombs": None, "arms": None, "game_time": None,
-                }
+                        "lives": None,
+                        "bombs": None,
+                        "arms": None,
+                        "game_time": None,
+                    },
+                )
 
             self._consecutive_transition = 0
 
@@ -888,7 +1051,7 @@ class MetalSlugEnv(gym.Env):
         if self.player_x_addr:
             if curr_x is not None and self._prev_x is not None:
                 x_delta = curr_x - self._prev_x
-                moving_right = (action[0] == 2)
+                moving_right = action[0] == 2
                 # Large negative delta = screen transition (scroll reset), not stuck
                 if x_delta < -100:
                     self._stuck_steps = 0
@@ -907,6 +1070,14 @@ class MetalSlugEnv(gym.Env):
                 self._prev_x = curr_x
                 if curr_x < 10000 and curr_x > self._max_player_x:
                     self._max_player_x = curr_x
+                # Episodic scroll novelty: bonus for reaching new scroll positions
+                if self._scroll_novelty_bonus > 0:
+                    bucket = curr_x // self._scroll_novelty_bucket
+                    if bucket not in self._visited_scroll_positions:
+                        self._visited_scroll_positions.add(bucket)
+                        reward += self._scroll_novelty_bonus
+                        self._episode_reward += self._scroll_novelty_bonus
+                        self._track("scroll_novelty", self._scroll_novelty_bonus)
         else:
             # Fallback: treat score stall as stuck proxy
             is_stuck = self._score_stall_steps >= self._score_stall_threshold
@@ -927,7 +1098,10 @@ class MetalSlugEnv(gym.Env):
                     if hp_penalty != 0.0:
                         num_penalties += 1
                         step_hp_total += hp_penalty
-                        self._log(1, f"[step {self._step_count}] HP DROP {hp}->{hp - 1} penalty={hp_penalty}")
+                        self._log(
+                            1,
+                            f"[step {self._step_count}] HP DROP {hp}->{hp - 1} penalty={hp_penalty}",
+                        )
                         reward += hp_penalty
                         self._episode_reward += hp_penalty
                         self._track("hp_loss", hp_penalty)
@@ -946,17 +1120,28 @@ class MetalSlugEnv(gym.Env):
                     reward += bonus
                     self._episode_reward += bonus
                     self._track("grenade_pickup", bonus)
-                    self._log(1, f"[step {self._step_count}] GRENADE PICKUP +{bomb_diff} reward={bonus}")
+                    self._log(
+                        1,
+                        f"[step {self._step_count}] GRENADE PICKUP +{bomb_diff} reward={bonus}",
+                    )
                 elif bomb_diff < 0 and score_delta == 0:
                     penalty = self._grenade_waste_penalty * (-bomb_diff)
                     reward += penalty
                     self._episode_reward += penalty
                     self._track("grenade_waste", penalty)
-                    self._log(1, f"[step {self._step_count}] GRENADE WASTED {bomb_diff} penalty={penalty}")
+                    self._log(
+                        1,
+                        f"[step {self._step_count}] GRENADE WASTED {bomb_diff} penalty={penalty}",
+                    )
         if bombs is not None:
             self._prev_bombs = bombs
 
-        if arms is not None and self._prev_arms is not None and arms != 65535 and self._prev_arms != 65535:
+        if (
+            arms is not None
+            and self._prev_arms is not None
+            and arms != 65535
+            and self._prev_arms != 65535
+        ):
             arms_diff = arms - self._prev_arms
             if abs(arms_diff) <= 100:  # ignore junk reads (arms is 16-bit LE)
                 if arms_diff > 0:
@@ -964,13 +1149,19 @@ class MetalSlugEnv(gym.Env):
                     reward += bonus
                     self._episode_reward += bonus
                     self._track("ammo_pickup", bonus)
-                    self._log(1, f"[step {self._step_count}] AMMO PICKUP +{arms_diff} reward={bonus}")
+                    self._log(
+                        1,
+                        f"[step {self._step_count}] AMMO PICKUP +{arms_diff} reward={bonus}",
+                    )
                 elif arms_diff < 0 and score_delta == 0:
                     penalty = self._ammo_waste_penalty * (-arms_diff)
                     reward += penalty
                     self._episode_reward += penalty
                     self._track("ammo_waste", penalty)
-                    self._log(1, f"[step {self._step_count}] AMMO WASTED {arms_diff} penalty={penalty}")
+                    self._log(
+                        1,
+                        f"[step {self._step_count}] AMMO WASTED {arms_diff} penalty={penalty}",
+                    )
         if arms is not None:
             self._prev_arms = arms
 
@@ -984,7 +1175,10 @@ class MetalSlugEnv(gym.Env):
             self._episode_reward += self._score_stall_penalty
             self._track("score_stall", self._score_stall_penalty)
             if self._score_stall_steps == self._score_stall_threshold:
-                self._log(1, f"[step {self._step_count}] [SCORE STALL] no score increase for {self._score_stall_steps} steps, applying penalty={self._score_stall_penalty}")
+                self._log(
+                    1,
+                    f"[step {self._step_count}] [SCORE STALL] no score increase for {self._score_stall_steps} steps, applying penalty={self._score_stall_penalty}",
+                )
 
         # Jump bonus: larger when stuck to encourage jumping over obstacles
         if action[2] == 1:  # modifier=jump
@@ -993,9 +1187,15 @@ class MetalSlugEnv(gym.Env):
             self._episode_reward += jb
             self._track("jump_bonus", jb)
             if is_stuck:
-                self._log(1, f"[step {self._step_count}] STUCK JUMP bonus={jb} stuck_steps={self._stuck_steps}")
+                self._log(
+                    1,
+                    f"[step {self._step_count}] STUCK JUMP bonus={jb} stuck_steps={self._stuck_steps}",
+                )
 
-        self._log(1, f"[step {self._step_count}] action={self._format_action(action)} reward={reward:.4f} total={self._episode_reward:.4f}")
+        self._log(
+            1,
+            f"[step {self._step_count}] action={self._format_action(action)} reward={reward:.4f} total={self._episode_reward:.4f}",
+        )
         self._log(
             2,
             (
@@ -1008,9 +1208,14 @@ class MetalSlugEnv(gym.Env):
         )
         # Max episode steps truncation: safety valve to prevent infinite episodes.
         # Uses truncated=True (not terminated) so PPO bootstraps the value estimate.
-        truncated = self._max_episode_steps > 0 and self._step_count >= self._max_episode_steps
+        truncated = (
+            self._max_episode_steps > 0 and self._step_count >= self._max_episode_steps
+        )
         if truncated:
-            self._log(1, f"[step {self._step_count}] MAX EPISODE STEPS reached ({self._max_episode_steps}), truncating")
+            self._log(
+                1,
+                f"[step {self._step_count}] MAX EPISODE STEPS reached ({self._max_episode_steps}), truncating",
+            )
             self._last_end_reason = "max_steps"
 
         info = {
@@ -1065,13 +1270,21 @@ class MetalSlugEnv(gym.Env):
                 time.sleep(0.1)
 
             if got_alive:
-                self._log(1, f"[reset] LOAD_STATE succeeded on attempt {load_attempt + 1}")
+                self._log(
+                    1, f"[reset] LOAD_STATE succeeded on attempt {load_attempt + 1}"
+                )
                 break
             else:
-                self._log(1, f"[reset] LOAD_STATE attempt {load_attempt + 1}/{max_load_attempts} "
-                          f"failed (game_mode={game_mode}), retrying...")
+                self._log(
+                    1,
+                    f"[reset] LOAD_STATE attempt {load_attempt + 1}/{max_load_attempts} "
+                    f"failed (game_mode={game_mode}), retrying...",
+                )
         else:
-            self._log(1, "[reset] WARNING: game_mode never reached 1 after all LOAD_STATE attempts")
+            self._log(
+                1,
+                "[reset] WARNING: game_mode never reached 1 after all LOAD_STATE attempts",
+            )
 
         self._prev_score = self._read_score()
         self._step_count = 0
@@ -1085,6 +1298,7 @@ class MetalSlugEnv(gym.Env):
         self._stuck_steps = 0
         self._prev_action = None  # reset sticky action state
         self._use_individual_reads = False  # reset fallback flag each episode
+        self._visited_scroll_positions.clear()
         # Read initial player X position for stuck detection
         self._prev_x = self._read_player_x()
         # Read initial HP and resources (003D3B07 starts at 2 = full health)
@@ -1105,7 +1319,9 @@ class MetalSlugEnv(gym.Env):
                     break
                 time.sleep(self.reset_check_interval_s)
             else:
-                self._log(1, "[reset] Timeout waiting for in-game; returning current frame.")
+                self._log(
+                    1, "[reset] Timeout waiting for in-game; returning current frame."
+                )
 
         raw = self._grab_raw()
         obs = self._preprocess(raw)

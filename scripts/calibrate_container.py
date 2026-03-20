@@ -54,9 +54,7 @@ def sample_grid(gray: np.ndarray, step_x: int = 40, step_y: int = 40) -> list[di
     return samples
 
 
-def suggest_in_game_checks(
-    samples: list[dict], gray: np.ndarray
-) -> list[dict]:
+def suggest_in_game_checks(samples: list[dict], gray: np.ndarray) -> list[dict]:
     """Analyze samples and suggest candidate in-game checks.
 
     Looks for regions that are NOT black (value > 30) and NOT white (< 250),
@@ -75,53 +73,70 @@ def suggest_in_game_checks(
         # Give a range of +/- 40 around the observed value.
         min_v = max(0, val - 40)
         max_v = min(255, val + 40)
-        candidates.append({
-            "x": s["x"],
-            "y": s["y"],
-            "observed": val,
-            "suggested_min": min_v,
-            "suggested_max": max_v,
-        })
+        candidates.append(
+            {
+                "x": s["x"],
+                "y": s["y"],
+                "observed": val,
+                "suggested_min": min_v,
+                "suggested_max": max_v,
+            }
+        )
 
     # Also sample the middle area for continue-screen detection.
     mid_y = h // 2
     mid_x = w // 2
     mid_samples = [
-        s for s in samples
+        s
+        for s in samples
         if abs(s["y"] - mid_y) < h * 0.15
         and abs(s["x"] - mid_x) < w * 0.2
         and s["value"] > 30
     ]
     for s in mid_samples:
         val = s["value"]
-        candidates.append({
-            "x": s["x"],
-            "y": s["y"],
-            "observed": val,
-            "suggested_min": max(0, val - 40),
-            "suggested_max": min(255, val + 40),
-            "note": "mid-screen (possible continue area)",
-        })
+        candidates.append(
+            {
+                "x": s["x"],
+                "y": s["y"],
+                "observed": val,
+                "suggested_min": max(0, val - 40),
+                "suggested_max": min(255, val + 40),
+                "note": "mid-screen (possible continue area)",
+            }
+        )
 
     return candidates
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Calibrate pixel checks inside container")
+    parser = argparse.ArgumentParser(
+        description="Calibrate pixel checks inside container"
+    )
     parser.add_argument("--capture-left", type=int, default=None)
     parser.add_argument("--capture-top", type=int, default=None)
     parser.add_argument("--capture-width", type=int, default=None)
     parser.add_argument("--capture-height", type=int, default=None)
-    parser.add_argument("--no-auto-detect", action="store_true", help="Skip xdotool auto-detection")
-    parser.add_argument("--grid-step", type=int, default=40, help="Pixel sampling grid step size")
+    parser.add_argument(
+        "--no-auto-detect", action="store_true", help="Skip xdotool auto-detection"
+    )
+    parser.add_argument(
+        "--grid-step", type=int, default=40, help="Pixel sampling grid step size"
+    )
     parser.add_argument(
         "--num-captures",
         type=int,
         default=3,
         help="Number of captures to average (reduces noise)",
     )
-    parser.add_argument("--capture-delay", type=float, default=0.5, help="Delay between captures")
-    parser.add_argument("--save-screenshot", action="store_true", help="Save screenshot to outputs/calibration/")
+    parser.add_argument(
+        "--capture-delay", type=float, default=0.5, help="Delay between captures"
+    )
+    parser.add_argument(
+        "--save-screenshot",
+        action="store_true",
+        help="Save screenshot to outputs/calibration/",
+    )
     parser.add_argument(
         "--output-json",
         type=str,
@@ -148,7 +163,9 @@ def main():
             width = detected["width"]
             height = detected["height"]
             source = "xdotool_auto"
-            print(f"Auto-detected RetroArch window: left={left} top={top} width={width} height={height}")
+            print(
+                f"Auto-detected RetroArch window: left={left} top={top} width={width} height={height}"
+            )
         else:
             print("Could not auto-detect RetroArch window; using defaults.")
 
@@ -165,7 +182,9 @@ def main():
         height = args.capture_height
         source = "cli"
 
-    print(f"Capture region: left={left} top={top} width={width} height={height} (source={source})")
+    print(
+        f"Capture region: left={left} top={top} width={width} height={height} (source={source})"
+    )
 
     # Capture multiple frames and average to reduce noise.
     print(f"Capturing {args.num_captures} frame(s)...")
@@ -219,9 +238,12 @@ def main():
     if top_candidates:
         print("\n--- Ready-to-use check values ---")
         print("For smoke_env.py --in-game-checks flag:")
-        parts = []
         # Pick top 2 HUD candidates for in-game checks.
-        hud_cands = [c for c in top_candidates if c.get("note", "") != "mid-screen (possible continue area)"][:2]
+        hud_cands = [
+            c
+            for c in top_candidates
+            if c.get("note", "") != "mid-screen (possible continue area)"
+        ][:2]
         mid_cands = [c for c in top_candidates if "mid-screen" in c.get("note", "")][:1]
 
         if hud_cands:
@@ -241,7 +263,13 @@ def main():
     os.makedirs(os.path.dirname(args.output_json) or ".", exist_ok=True)
 
     output = {
-        "capture_region": {"left": left, "top": top, "width": width, "height": height, "source": source},
+        "capture_region": {
+            "left": left,
+            "top": top,
+            "width": width,
+            "height": height,
+            "source": source,
+        },
         "frame_size": {"width": w, "height": h},
         "candidates": top_candidates,
         "all_samples": samples,

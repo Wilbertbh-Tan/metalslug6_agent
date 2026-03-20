@@ -67,20 +67,51 @@ def make_env(args, verbose=0, fast_forward_mode="off"):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Inference-only evaluation for a trained PPO model.")
-    parser.add_argument("--model", type=str, default=None, help="Path to .zip model checkpoint")
-    parser.add_argument("--random", action="store_true", help="Use random agent instead of a trained model")
-    parser.add_argument("--manual", action="store_true",
-                        help="Manual mode: no agent actions, just observe rewards from human play")
-    parser.add_argument("--episodes", type=int, default=3, help="Number of episodes to evaluate")
-    parser.add_argument("--max-steps", type=int, default=5000, help="Max steps per episode")
-    parser.add_argument("--sleep", type=float, default=0.02, help="Sleep between steps (for watchable playback)")
-    parser.add_argument("--fast-forward-key", type=str, default=None, metavar="KEY",
-                        help="Optional key to press once before eval (e.g. space)")
+    parser = argparse.ArgumentParser(
+        description="Inference-only evaluation for a trained PPO model."
+    )
+    parser.add_argument(
+        "--model", type=str, default=None, help="Path to .zip model checkpoint"
+    )
+    parser.add_argument(
+        "--random",
+        action="store_true",
+        help="Use random agent instead of a trained model",
+    )
+    parser.add_argument(
+        "--manual",
+        action="store_true",
+        help="Manual mode: no agent actions, just observe rewards from human play",
+    )
+    parser.add_argument(
+        "--episodes", type=int, default=3, help="Number of episodes to evaluate"
+    )
+    parser.add_argument(
+        "--max-steps", type=int, default=5000, help="Max steps per episode"
+    )
+    parser.add_argument(
+        "--sleep",
+        type=float,
+        default=0.02,
+        help="Sleep between steps (for watchable playback)",
+    )
+    parser.add_argument(
+        "--fast-forward-key",
+        type=str,
+        default=None,
+        metavar="KEY",
+        help="Optional key to press once before eval (e.g. space)",
+    )
     parser.add_argument(
         "--fast-forward-mode",
         type=str,
-        choices=["off", "set_once", "set_once_persist", "on_reset_once", "on_reset_every"],
+        choices=[
+            "off",
+            "set_once",
+            "set_once_persist",
+            "on_reset_once",
+            "on_reset_every",
+        ],
         default=None,
         help="Fast-forward behavior (default auto: set_once when key is provided)",
     )
@@ -90,12 +121,20 @@ def main():
         default="outputs/calibration/fast_forward_state.json",
         help="State file used by set_once_persist mode",
     )
-    parser.add_argument("--stochastic", action="store_true",
-                        help="Use stochastic policy actions (default is deterministic)")
-    parser.add_argument("--verbose-env", action="store_true",
-                        help="Enable verbose env logging")
-    parser.add_argument("--verbose-level", type=int, default=int(os.environ.get("VERBOSE_LEVEL", "1")),
-                        help="Verbosity level (0-3): 0 quiet, 1 basic events, 2 reward detail, 3 max diagnostics")
+    parser.add_argument(
+        "--stochastic",
+        action="store_true",
+        help="Use stochastic policy actions (default is deterministic)",
+    )
+    parser.add_argument(
+        "--verbose-env", action="store_true", help="Enable verbose env logging"
+    )
+    parser.add_argument(
+        "--verbose-level",
+        type=int,
+        default=int(os.environ.get("VERBOSE_LEVEL", "1")),
+        help="Verbosity level (0-3): 0 quiet, 1 basic events, 2 reward detail, 3 max diagnostics",
+    )
     parser.add_argument(
         "--calibration-json",
         type=str,
@@ -107,16 +146,27 @@ def main():
         action="store_true",
         help="Ignore calibration JSON and use env/default capture values only",
     )
-    parser.add_argument("--no-auto-detect", action="store_true",
-                        help="Disable xdotool window auto-detection")
-    parser.add_argument("--disable-in-game-checks", action="store_true",
-                        help="Bypass in-game pixel gate")
+    parser.add_argument(
+        "--no-auto-detect",
+        action="store_true",
+        help="Disable xdotool window auto-detection",
+    )
+    parser.add_argument(
+        "--disable-in-game-checks",
+        action="store_true",
+        help="Bypass in-game pixel gate",
+    )
     parser.add_argument("--capture-left", type=int, default=None)
     parser.add_argument("--capture-top", type=int, default=None)
     parser.add_argument("--capture-width", type=int, default=None)
     parser.add_argument("--capture-height", type=int, default=None)
-    parser.add_argument("--high-score-json", type=str, default=None, metavar="PATH",
-                        help="Path to a JSON file where the highest score is logged after each episode")
+    parser.add_argument(
+        "--high-score-json",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to a JSON file where the highest score is logged after each episode",
+    )
     args = parser.parse_args()
 
     in_container = os.environ.get("DISPLAY") and os.environ.get("MSLUG_HEADLESS")
@@ -125,7 +175,9 @@ def main():
         print("Evaluation starts in 5 seconds...")
         time.sleep(5)
     else:
-        print("Headless/container mode: using DISPLAY=%s" % os.environ.get("DISPLAY", ""))
+        print(
+            "Headless/container mode: using DISPLAY=%s" % os.environ.get("DISPLAY", "")
+        )
 
     fast_forward_mode = args.fast_forward_mode
     if fast_forward_mode is None:
@@ -148,6 +200,7 @@ def main():
         mode_label = "manual (noop)"
     else:
         from src.agents.ppo_agent import PPOAgent
+
         agent = PPOAgent(args.model, deterministic=not args.stochastic)
         mode_label = f"PPO deterministic={agent.deterministic}"
 
@@ -158,9 +211,18 @@ def main():
     def format_action(a):
         """Format a MultiDiscrete action as readable string."""
         import numpy as np
+
         a = np.asarray(a).flatten()
         if len(a) >= 3:
-            parts = [n for n in [MOVEMENT_NAMES[a[0]], ATTACK_NAMES[a[1]], MODIFIER_NAMES[a[2]]] if n != "noop"]
+            parts = [
+                n
+                for n in [
+                    MOVEMENT_NAMES[a[0]],
+                    ATTACK_NAMES[a[1]],
+                    MODIFIER_NAMES[a[2]],
+                ]
+                if n != "noop"
+            ]
             return "+".join(parts) or "noop"
         return str(a)
 
@@ -191,7 +253,9 @@ def main():
             done = False
 
             while not done and ep_len < args.max_steps:
-                action = agent.predict(obs) if agent else np.array([0, 0, 0])  # noop in manual mode
+                action = (
+                    agent.predict(obs) if agent else np.array([0, 0, 0])
+                )  # noop in manual mode
                 obs, reward, terminated, truncated, info = env.step(action)
                 ep_reward += float(reward)
                 ep_len += 1

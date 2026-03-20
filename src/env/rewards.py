@@ -20,12 +20,12 @@ def compute_reward(
     score_reward = min(max(score_delta, 0) * score_scale, score_clip)
 
     # Extract movement from MultiDiscrete action (dim 0) or legacy int
-    movement = int(action[0]) if hasattr(action, '__len__') else int(action)
+    movement = int(action[0]) if hasattr(action, "__len__") else int(action)
     progress_reward = 0.0
     if movement == 2:  # right
         progress_reward = progress_scale
     elif movement == 1:  # left
-        progress_reward = -0.001
+        progress_reward = -progress_scale * 0.1
 
     total = score_reward + progress_reward + time_penalty
     info = {

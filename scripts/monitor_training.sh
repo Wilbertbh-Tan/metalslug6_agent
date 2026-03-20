@@ -77,5 +77,3 @@ tail -f "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
         echo "$line"
     fi
 done
-
-

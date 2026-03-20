@@ -5,3 +5,8 @@ __pycache__/
 outputs/
 
 .DS_Store
+.ruff_cache/
+*.log
+*.pkl
+*.pt
+*.pth

@@ -36,5 +36,3 @@ echo "  mslug-logs-boot  - Filter for auto-boot messages"
 echo "  mslug-logs-keys  - Filter for key sequence"
 echo "  mslug-ps         - Show container status"
 echo "  mslug-status     - Show container status (formatted)"
-
-

@@ -53,7 +53,10 @@ def load_region_values(
     resolved["width"] = _parse_int_env("CAPTURE_WIDTH", int(resolved["width"]))
     resolved["height"] = _parse_int_env("CAPTURE_HEIGHT", int(resolved["height"]))
 
-    if any(os.environ.get(k) for k in ("CAPTURE_LEFT", "CAPTURE_TOP", "CAPTURE_WIDTH", "CAPTURE_HEIGHT")):
+    if any(
+        os.environ.get(k)
+        for k in ("CAPTURE_LEFT", "CAPTURE_TOP", "CAPTURE_WIDTH", "CAPTURE_HEIGHT")
+    ):
         resolved["source"] = "env_override"
 
     if resolved["width"] <= 0 or resolved["height"] <= 0:
