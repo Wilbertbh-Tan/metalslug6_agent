@@ -12,9 +12,9 @@ PPO-based reinforcement learning agent for Metal Slug 6 (Atomiswave/Flycast) usi
 
 | Run | Architecture | Max Score | Avg Score | Steps | Notes |
 |-----|-------------|-----------|-----------|-------|-------|
-| PPO_16 | ImpalaCNN 16-32-32 | 196,360 | 47,784 | ~5.8M | Best so far |
+| PPO_16 | ImpalaCNN 16-32-32 | 196,360 | 47,784 | ~5.8M | Best avg score baseline |
 | PPO_22 | ImpalaCNN 16-32-32 | 150,080 | 45,000 | ~5.5M | Curriculum death penalties |
-| PPO_25 | ImpalaCNN 32-64-64 + DrAC | In progress | — | — | New architecture, fresh start |
+| PPO_26 | ImpalaCNN 32-64-64 + DrAC | 161,530 | 35,153 | ~17M | Wider CNN, reward rebalance. Value function collapsed at 1M steps due to plasticity reset — see [experiment log](EXPERIMENT_LOG.md) |
 
 ## Architecture
 
@@ -24,7 +24,7 @@ PPO-based reinforcement learning agent for Metal Slug 6 (Atomiswave/Flycast) usi
 - **Action space**: MultiDiscrete([5, 3, 3]) — movement, attack, modifier
 - **Reward shaping**: Score delta, progress, survival bonus, curriculum death penalties (9 levels)
 - **Exploration**: Entropy bonus, sticky actions (25%), episodic scroll novelty bonus
-- **Plasticity**: Weight decay (1e-4), periodic policy head reset every 500k steps
+- **Plasticity**: Weight decay (1e-4)
 
 ## Setup
 
@@ -70,7 +70,7 @@ tail -f outputs/runs/PPO_*/logs/training_stdout.log
 |----------|---------|-------------|
 | `TIMESTEPS` | `100000000` | Total training timesteps |
 | `DEVICE` | `auto` | `auto`, `cuda`, or `cpu` |
-| `CHECKPOINT_EVERY` | `50000` | Save checkpoint every N steps |
+| `CHECKPOINT_EVERY` | `1000000` | Save checkpoint every N steps |
 | `N_STEPS` | `2048` | Rollout steps per PPO update |
 | `BATCH_SIZE` | `256` | Mini-batch size |
 | `LEARNING_RATE` | `5e-5` | Learning rate (linear schedule) |
@@ -100,6 +100,10 @@ scripts/
 config/
   retroarch-container.cfg # Headless RetroArch config
 ```
+
+## Experiment Log
+
+See [EXPERIMENT_LOG.md](EXPERIMENT_LOG.md) for a detailed training journal documenting problems encountered, root cause analysis, fixes applied, and results across all training runs.
 
 ## What This Repo Does NOT Include
 

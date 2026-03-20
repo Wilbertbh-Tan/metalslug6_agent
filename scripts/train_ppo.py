@@ -192,6 +192,15 @@ class ScoreLoggingCallback(BaseCallback):
             if global_avg_reward is not None:
                 self.logger.record("game/global_avg_episode_reward", global_avg_reward)
 
+            # Log VecNormalize reward running std (helps diagnose if shaping signals are crushed)
+            try:
+                vec_env = self.model.get_env()
+                if hasattr(vec_env, "ret_rms"):
+                    ret_std = float(vec_env.ret_rms.var**0.5)
+                    self.logger.record("vecnorm/reward_std", ret_std)
+            except Exception:
+                pass
+
             if self.print_stdout:
                 print(
                     "[monitor] step=%s eps=%s round_avg_score=%s round_avg_reward=%s "
@@ -681,10 +690,10 @@ def make_env(
         region_values.update(detected)
         auto_detected = True
     player_x_addr = os.environ.get("PLAYER_X_ADDR", "3FB84E")
-    progress_scale = float(os.environ.get("PROGRESS_SCALE", "0.01"))
+    progress_scale = float(os.environ.get("PROGRESS_SCALE", "0.03"))
     score_scale = float(os.environ.get("SCORE_SCALE", "0.002"))
     score_clip = float(os.environ.get("SCORE_CLIP", "2.0"))
-    time_penalty = float(os.environ.get("TIME_PENALTY", "-0.0005"))
+    time_penalty = float(os.environ.get("TIME_PENALTY", "-0.002"))
     # HP loss penalties: applied when HP drops during gameplay (before game_mode death)
     hp2 = float(os.environ.get("HP_LOSS_PENALTY_2", "-5.0"))  # HP drops from 2
     hp1 = float(os.environ.get("HP_LOSS_PENALTY_1", "-5.0"))  # HP drops from 1
@@ -699,10 +708,10 @@ def make_env(
     score_stall_penalty = float(os.environ.get("SCORE_STALL_PENALTY", "-0.002"))
     jump_bonus = float(os.environ.get("JUMP_BONUS", "0.0"))
     jump_bonus_stuck = float(os.environ.get("JUMP_BONUS_STUCK", "0.02"))
-    survival_bonus = float(os.environ.get("SURVIVAL_BONUS", "0.01"))
+    survival_bonus = float(os.environ.get("SURVIVAL_BONUS", "0.003"))
     stuck_threshold_steps = int(os.environ.get("STUCK_THRESHOLD_STEPS", "10"))
     progress_scale_x = float(os.environ.get("PROGRESS_SCALE_X", "0.0"))
-    scroll_novelty_bonus = float(os.environ.get("SCROLL_NOVELTY_BONUS", "0.005"))
+    scroll_novelty_bonus = float(os.environ.get("SCROLL_NOVELTY_BONUS", "0.02"))
     scroll_novelty_bucket = int(os.environ.get("SCROLL_NOVELTY_BUCKET", "10"))
     max_episode_steps = int(os.environ.get("MAX_EPISODE_STEPS", "3000"))
     frame_skip = int(os.environ.get("FRAME_SKIP", "3"))
@@ -931,9 +940,9 @@ def main():
     parser.add_argument(
         "--checkpoint-every",
         type=int,
-        default=10_000,
+        default=1_000_000,
         metavar="N",
-        help="Save a checkpoint every N steps (default: 10000). For 200k run, use 20000 to get 10 checkpoints.",
+        help="Save a checkpoint every N steps (default: 1000000). Best model is saved separately on improvement.",
     )
     parser.add_argument(
         "--score-log-every",
@@ -1296,12 +1305,12 @@ def main():
         % (
             os.environ.get("SCORE_SCALE", "0.002"),
             os.environ.get("SCORE_CLIP", "2.0"),
-            os.environ.get("PROGRESS_SCALE", "0.01"),
-            os.environ.get("TIME_PENALTY", "-0.0005"),
+            os.environ.get("PROGRESS_SCALE", "0.03"),
+            os.environ.get("TIME_PENALTY", "-0.002"),
             os.environ.get("HP_LOSS_PENALTY_2", "-5.0"),
             os.environ.get("HP_LOSS_PENALTY_1", "-5.0"),
             os.environ.get("GAME_OVER_PENALTY", "-5.0"),
-            os.environ.get("SURVIVAL_BONUS", "0.01"),
+            os.environ.get("SURVIVAL_BONUS", "0.003"),
         )
     )
     print(
@@ -1394,7 +1403,6 @@ def main():
     vec_norm_cb = VecNormalizeSaveCallback(models_dir, save_freq=args.checkpoint_every)
     best_model_cb = BestModelCallback(save_path=models_dir, window=10)
     curriculum_cb = DeathPenaltyCurriculumCallback(window=100, verbose=1)
-    plasticity_cb = PlasticityResetCallback(reset_every=500_000, verbose=1)
     callbacks = CallbackList(
         [
             checkpoint_cb,
@@ -1404,7 +1412,6 @@ def main():
             score_cb,
             episode_cb,
             curriculum_cb,
-            plasticity_cb,
         ]
     )
 
